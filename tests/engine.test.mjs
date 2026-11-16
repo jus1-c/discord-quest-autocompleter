@@ -338,30 +338,197 @@ test("a rejected desktop heartbeat is not retried in a tight loop", async () => 
     }
 });
 
-test("a stream patch ends only on the matching quest heartbeat", async () => {
+test("stream quests stay opt-in and never block other quests", async () => {
     const { createEngine } = await loadEngine();
-    const quest = taskQuest("402", "STREAM_ON_DESKTOP", 900);
-    const env = runtime(async () => ({ body: { quests: [quest] } }));
-    const streamingStore = { getStreamerActiveStreamMetadata() { return null; } };
-    const original = streamingStore.getStreamerActiveStreamMetadata;
-    env.options.flux.stores.ApplicationStreamingStore = streamingStore;
-    env.options.isDesktop = true;
+    const env = runtime(async () => ({ body: { quests: [taskQuest("701", "STREAM_ON_DESKTOP", 90), videoQuest("102")] } }));
+    env.options.flux.stores.ApplicationStreamingStore = { getCurrentUserActiveStream: () => ({ guildId: "1", channelId: "2", ownerId: "3" }) };
+    env.options.flux.stores.SortedVoiceStateStore = { countVoiceStatesForChannel: () => 2 };
+    const heartbeats = [];
+    const posts = [];
+    env.options.desktopTransport = {
+        async sendHeartbeat(args) {
+            heartbeats.push(args);
+            return { ok: true, status: 200, body: { progress: { STREAM_ON_DESKTOP: { value: 90 } } } };
+        }
+    };
+    env.options.http.post = async request => {
+        posts.push(request);
+        return { body: { completed_at: "2026-11-16T00:00:00.000Z" } };
+    };
     const engine = createEngine(env.options);
     try {
         await engine.start();
         await nextTurn();
-        assert.equal(streamingStore.getStreamerActiveStreamMetadata().id, "999");
-        const heartbeat = id => ({
-            type: "QUESTS_SEND_HEARTBEAT_SUCCESS",
-            questId: id,
-            userStatus: { progress: { STREAM_ON_DESKTOP: { value: 900 } } }
-        });
-        env.options.flux.dispatcher.dispatch(heartbeat("other"));
-        assert.equal(env.subscriptions.get("QUESTS_SEND_HEARTBEAT_SUCCESS").size, 1);
-        env.options.flux.dispatcher.dispatch(heartbeat("402"));
+        assert.deepEqual(heartbeats, []);
+        assert.deepEqual(posts.map(request => request.url), ["/quests/102/video-progress"]);
+    } finally {
+        engine.stop();
+    }
+});
+
+test("a stream quest waits until the user is really streaming", async () => {
+    const { createEngine } = await loadEngine();
+    const env = runtime(async () => ({ body: { quests: [taskQuest("702", "STREAM_ON_DESKTOP", 90), videoQuest("102")] } }));
+    env.options.settings.allowStreamDesktop = true;
+    env.options.flux.stores.ApplicationStreamingStore = { getCurrentUserActiveStream: () => null };
+    env.options.flux.stores.SortedVoiceStateStore = { countVoiceStatesForChannel: () => 0 };
+    const heartbeats = [];
+    const posts = [];
+    env.options.desktopTransport = {
+        async sendHeartbeat(args) {
+            heartbeats.push(args);
+            return { ok: true, status: 200, body: {} };
+        }
+    };
+    env.options.http.post = async request => {
+        posts.push(request);
+        return { body: { completed_at: "2026-11-16T00:00:00.000Z" } };
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
         await nextTurn();
-        assert.equal(streamingStore.getStreamerActiveStreamMetadata, original);
-        assert.equal(env.subscriptions.get("QUESTS_SEND_HEARTBEAT_SUCCESS").size, 0);
+        assert.deepEqual(heartbeats, []);
+        assert.deepEqual(posts.map(request => request.url), ["/quests/102/video-progress"]);
+    } finally {
+        engine.stop();
+    }
+});
+
+test("a stream quest waits while nobody is watching", async () => {
+    const { createEngine } = await loadEngine();
+    const env = runtime(async () => ({ body: { quests: [taskQuest("703", "STREAM_ON_DESKTOP", 90)] } }));
+    env.options.settings.allowStreamDesktop = true;
+    env.options.flux.stores.ApplicationStreamingStore = { getCurrentUserActiveStream: () => ({ guildId: "1", channelId: "2", ownerId: "3" }) };
+    env.options.flux.stores.SortedVoiceStateStore = { countVoiceStatesForChannel: () => 1 };
+    const heartbeats = [];
+    env.options.desktopTransport = {
+        async sendHeartbeat(args) {
+            heartbeats.push(args);
+            return { ok: true, status: 200, body: {} };
+        }
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        assert.deepEqual(heartbeats, []);
+    } finally {
+        engine.stop();
+    }
+});
+
+test("a stream quest heartbeats with the stream key of the live stream", async () => {
+    const { createEngine } = await loadEngine();
+    const env = runtime(async () => ({ body: { quests: [taskQuest("704", "STREAM_ON_DESKTOP", 90)] } }));
+    env.options.settings.allowStreamDesktop = true;
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    env.options.flux.stores.ApplicationStreamingStore = { getCurrentUserActiveStream: () => ({ guildId: "1", channelId: "2", ownerId: "3" }) };
+    env.options.flux.stores.SortedVoiceStateStore = { countVoiceStatesForChannel: () => 2 };
+    const heartbeats = [];
+    env.options.desktopTransport = {
+        async sendHeartbeat(args) {
+            heartbeats.push(args);
+            return { ok: true, status: 200, body: { progress: { STREAM_ON_DESKTOP: { value: 90 } } } };
+        }
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        assert.equal(heartbeats.length, 2);
+        assert.equal(heartbeats[0].questId, "704");
+        assert.equal(heartbeats[0].streamKey, "guild:1:2:3");
+        assert.equal(heartbeats[0].applicationId, "999");
+        assert.equal(heartbeats[0].userToken, "discord-test-token");
+        assert.equal(heartbeats[0].terminal, false);
+        assert.equal(heartbeats[1].terminal, true);
+    } finally {
+        engine.stop();
+    }
+});
+
+test("a direct message stream uses a call stream key", async () => {
+    const { createEngine } = await loadEngine();
+    const env = runtime(async () => ({ body: { quests: [taskQuest("705", "STREAM_ON_DESKTOP", 90)] } }));
+    env.options.settings.allowStreamDesktop = true;
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    env.options.flux.stores.ApplicationStreamingStore = { getCurrentUserActiveStream: () => ({ channelId: "2", ownerId: "3" }) };
+    env.options.flux.stores.SortedVoiceStateStore = { countVoiceStatesForChannel: () => 2 };
+    const heartbeats = [];
+    env.options.desktopTransport = {
+        async sendHeartbeat(args) {
+            heartbeats.push(args);
+            return { ok: true, status: 200, body: { progress: { STREAM_ON_DESKTOP: { value: 90 } } } };
+        }
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        assert.equal(heartbeats[0].streamKey, "call:2:3");
+    } finally {
+        engine.stop();
+    }
+});
+
+test("the master switch stops new work", async () => {
+    const { createEngine } = await loadEngine();
+    const env = runtime(async () => ({ body: { quests: [videoQuest("101")] } }));
+    env.options.settings.enabled = false;
+    const posts = [];
+    env.options.http.post = async request => {
+        posts.push(request);
+        return { body: { completed_at: "2026-11-16T00:00:00.000Z" } };
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        assert.deepEqual(posts, []);
+    } finally {
+        engine.stop();
+    }
+});
+
+test("quests the user has not accepted are left alone", async () => {
+    const { createEngine } = await loadEngine();
+    const quest = videoQuest("201");
+    quest.userStatus = null;
+    const env = runtime(async () => ({ body: { quests: [quest] } }));
+    const posts = [];
+    env.options.http.post = async request => {
+        posts.push(request);
+        return { status: 200, body: {} };
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        assert.deepEqual(posts, []);
+    } finally {
+        engine.stop();
+    }
+});
+
+test("a quest family that is turned off is skipped", async () => {
+    const { createEngine } = await loadEngine();
+    const env = runtime(async () => ({ body: { quests: [videoQuest("101"), taskQuest("301", "PLAY_ACTIVITY", 20)] } }));
+    env.options.settings.allowWatchVideo = false;
+    env.options.flux.stores.ChannelStore = { getSortedPrivateChannels: () => [{ id: "1234" }] };
+    const posts = [];
+    env.options.http.post = async request => {
+        posts.push(request);
+        return { body: { progress: { PLAY_ACTIVITY: { value: 20 } } } };
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        assert.deepEqual(posts.map(request => request.url), [
+            "/quests/301/heartbeat",
+            "/quests/301/heartbeat"
+        ]);
     } finally {
         engine.stop();
     }

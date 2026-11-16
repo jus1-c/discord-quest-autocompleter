@@ -52,9 +52,15 @@ test("Lune builds a Shelter-loadable plugin with matching manifest hash", async 
         assert.equal(typeof plugin.settings, "function");
         try {
             await plugin.onLoad();
+            assert.equal(shelter.plugin.store.enabled, true);
             assert.equal(shelter.plugin.store.autoAcceptQuests, false);
             assert.equal(shelter.plugin.store.autoClaim, false);
             assert.equal(shelter.plugin.store.achievementBypass, false);
+            assert.equal(shelter.plugin.store.allowWatchVideo, true);
+            assert.equal(shelter.plugin.store.allowPlayDesktop, true);
+            assert.equal(shelter.plugin.store.allowPlayActivity, true);
+            assert.equal(shelter.plugin.store.allowStreamDesktop, false);
+            assert.equal(shelter.plugin.store.logProgress, true);
             assert.equal(shelter.plugin.store.fetchIntervalMinutes, 120);
             assert.equal(shelter.plugin.store.desktopHeartbeatSeconds, 60);
             assert.deepEqual(events, []);

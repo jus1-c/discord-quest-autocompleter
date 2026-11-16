@@ -56,12 +56,22 @@ npm run build
 
 The output is in `dist/quest-autocompleter/`.
 
+### Settings
+
+Open the gear icon on the plugin card in **Shelter → Plugins**.
+
+- **Enable automated quests** — master switch. Turning it off stops the running task, the queue and every new request.
+- **Accept new quests automatically** — off by default. With it off the plugin only works on quests you accepted yourself.
+- **Quest families** — video, play desktop and activity are on; stream desktop and achievement are off because both are experimental.
+- **Claim rewards automatically** — off by default, plus the CAPTCHA solver and its API key.
+- **Advanced** — quest refresh interval, desktop heartbeat interval, desktop user agent override and console logging.
+
 ### Dorion limitations
 
 - `PLAY_ON_DESKTOP` runs through Dorion's native HTTP client (`@tauri-apps/plugin-http`) instead of Discord's web transport. Discord rejects quest heartbeats whose user agent has no Electron version, so the plugin sends each heartbeat with a desktop user agent and a matching `X-Super-Properties` header. Only quest requests carry that identity; chat and everything else stay on the normal web session. This path has **not** been confirmed against Discord's servers, so treat a completed quest as the only proof: check that progress rises and survives a reload.
-- `STREAM_ON_DESKTOP` still needs Discord's native desktop runtime, because the heartbeat has to reference a real, live stream key. Dorion cannot create one, so these tasks are skipped.
+- `STREAM_ON_DESKTOP` is opt-in and experimental. Discord validates that a real stream exists and that someone else is watching it, and only trusts the client about which application the stream belongs to. The plugin therefore waits for a stream you started yourself, then heartbeats with that stream's real key through the same native transport. It does not fake the stream or the viewer, and it has **not** been verified end to end.
 - Achievement processing is off by default in the Shelter port. Its requests need a `Referer` header, which Dorion 7.0.1's Tauri HTTP backend strips, so completion may fail. An achievement that fails is not retried until the plugin restarts.
-- Video, activity, automatic enrollment, achievement, auto-claim and desktop heartbeat logic have automated tests with simulated Discord and Tauri responses. They have **not** been verified against a live Dorion session or Discord's servers.
+- Video, activity, automatic enrollment, achievement, auto-claim, desktop and stream heartbeat logic have automated tests with simulated Discord and Tauri responses. They have **not** been verified against a live Dorion session or Discord's servers.
 - Auto-claim is off by default and needs a solver API key. The key is stored unencrypted in Shelter's local plugin storage and sent to the selected solver. A failed claim can be completed manually.
 - Achievement attempts authorize an activity application. If cleanup is interrupted or ambiguous, check Discord's **Authorized Apps** settings. Even one newly found authorization cannot be conclusively tied to this plugin if another authorization for the same application is created concurrently.
 

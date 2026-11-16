@@ -6,7 +6,7 @@
 
 import { normalizeQuest } from "./quests.js";
 
-export function createEngine({ flux, http, settings, native, desktopTransport, isDesktop = false }) {
+export function createEngine({ flux, http, settings, native, desktopTransport }) {
     const { dispatcher } = flux;
     const supportedTasks = [
         "WATCH_VIDEO", "PLAY_ON_DESKTOP", "STREAM_ON_DESKTOP",
@@ -19,7 +19,6 @@ export function createEngine({ flux, http, settings, native, desktopTransport, i
     let pendingTimeouts = new Map();
     let queue = [];
     let activeQuestId = null;
-    let activeCleanup = null;
     let processing = false;
     let scanningGeneration = null;
     let claimingGeneration = null;
@@ -43,8 +42,6 @@ export function createEngine({ flux, http, settings, native, desktopTransport, i
         generation++;
         sessionController?.abort();
         sessionController = undefined;
-        activeCleanup?.();
-        activeCleanup = null;
         clearInterval(pollInterval);
         clearInterval(fetchInterval);
         pollInterval = undefined;
@@ -124,6 +121,28 @@ export function createEngine({ flux, http, settings, native, desktopTransport, i
     function isCompletable(quest) {
         if (!(new Date(quest.config?.expiresAt).getTime() > Date.now())) return false;
         return taskType(quest) !== undefined;
+    }
+
+    function isEnabled() {
+        return settings.enabled !== false;
+    }
+
+    function isTaskAllowed(type) {
+        switch (type) {
+            case "WATCH_VIDEO":
+            case "WATCH_VIDEO_ON_MOBILE":
+                return settings.allowWatchVideo !== false;
+            case "PLAY_ON_DESKTOP":
+                return settings.allowPlayDesktop !== false;
+            case "STREAM_ON_DESKTOP":
+                return settings.allowStreamDesktop === true;
+            case "PLAY_ACTIVITY":
+                return settings.allowPlayActivity !== false;
+            case "ACHIEVEMENT_IN_ACTIVITY":
+                return settings.achievementBypass === true;
+            default:
+                return false;
+        }
     }
 
     async function processVideo(quest, type, myGeneration) {
@@ -270,40 +289,46 @@ export function createEngine({ flux, http, settings, native, desktopTransport, i
         });
     }
 
-    async function processDesktopStream(quest) {
-        if (!isDesktop) {
-            console.warn(`[QuestAutocompleter] ${quest.config.messages?.questName}: STREAM_ON_DESKTOP requires the Discord desktop runtime.`);
+    function streamKeyFor(stream) {
+        const channelId = stream?.channelId;
+        const ownerId = stream?.ownerId;
+        if (channelId == null || ownerId == null) return null;
+        return stream.guildId
+            ? `guild:${stream.guildId}:${channelId}:${ownerId}`
+            : `call:${channelId}:${ownerId}`;
+    }
+
+    /**
+     * Stream quests cannot be faked: Discord validates that a real stream exists and that
+     * someone is watching it, and only trusts the client about which application it belongs
+     * to. So this waits for the user's own stream and then heartbeats with its real key.
+     */
+    async function processDesktopStream(quest, myGeneration) {
+        if (!desktopTransport) {
+            console.warn(`[QuestAutocompleter] ${quest.config.messages?.questName}: STREAM_ON_DESKTOP needs Dorion native HTTP (Tauri).`);
             return;
         }
-        const store = findStore("getStreamerActiveStreamMetadata");
-        if (!store) throw new Error("ApplicationStreamingStore is unavailable");
+        const streamStore = findStore("getCurrentUserActiveStream");
+        if (!streamStore) throw new Error("ApplicationStreamingStore is unavailable");
+        const stream = streamStore.getCurrentUserActiveStream();
+        if (!stream) {
+            log(`Waiting for a live stream: ${quest.config.messages?.questName}`);
+            return;
+        }
+        const voiceStore = findStore("countVoiceStatesForChannel");
+        if (!voiceStore) throw new Error("SortedVoiceStateStore is unavailable");
+        const viewers = Number(voiceStore.countVoiceStatesForChannel(stream.channelId));
+        if (!Number.isFinite(viewers) || viewers < 2) {
+            log(`Waiting for a viewer in the voice channel: ${quest.config.messages?.questName}`);
+            return;
+        }
+        const streamKey = streamKeyFor(stream);
+        if (!streamKey) throw new Error("Could not read the stream key of the active stream");
         const task = taskConfig(quest).tasks.STREAM_ON_DESKTOP;
         const applicationId = quest.config.application?.id ?? task.applications?.[0]?.id;
         if (!applicationId) throw new Error("Missing application ID");
-        const original = store.getStreamerActiveStreamMetadata;
-        const pid = Math.floor(Math.random() * 30_000) + 1000;
-
-        await new Promise(resolve => {
-            let finished = false;
-            const cleanup = () => {
-                if (finished) return;
-                finished = true;
-                store.getStreamerActiveStreamMetadata = original;
-                dispatcher.unsubscribe("QUESTS_SEND_HEARTBEAT_SUCCESS", onHeartbeat);
-                if (activeCleanup === cleanup) activeCleanup = null;
-                resolve();
-            };
-            const onHeartbeat = data => {
-                if (data.questId !== quest.id) return;
-                const progress = quest.config.configVersion === 1
-                    ? data.userStatus?.streamProgressSeconds
-                    : data.userStatus?.progress?.STREAM_ON_DESKTOP?.value;
-                if (Number.isFinite(progress) && progress >= task.target) cleanup();
-            };
-            activeCleanup = cleanup;
-            dispatcher.subscribe("QUESTS_SEND_HEARTBEAT_SUCCESS", onHeartbeat);
-            store.getStreamerActiveStreamMetadata = () => ({ id: applicationId, pid, sourceName: null });
-            log(`Spoofed stream: ${quest.config.messages?.questName}; a voice channel with another participant is required`);
+        await runDesktopHeartbeat({
+            quest, myGeneration, taskType: "STREAM_ON_DESKTOP", target: task.target, applicationId, streamKey
         });
     }
 
@@ -337,7 +362,7 @@ export function createEngine({ flux, http, settings, native, desktopTransport, i
     }
 
     async function claimCompletedQuests(myGeneration) {
-        if (!settings.autoClaim || !settings.captchaApiKey || claimingGeneration === myGeneration) return;
+        if (!settings.autoClaim || !settings.captchaApiKey || claimingGeneration === myGeneration || !isEnabled()) return;
         const quests = allQuests().filter(quest =>
             quest.userStatus?.completedAt && !quest.userStatus?.claimedAt &&
             !claimed.has(quest.id) && !claimFailed.has(quest.id) && taskConfig(quest)?.tasks
@@ -450,15 +475,19 @@ export function createEngine({ flux, http, settings, native, desktopTransport, i
     }
 
     async function processQueue(myGeneration) {
-        if (processing || myGeneration !== generation) return;
+        if (processing || myGeneration !== generation || !isEnabled()) return;
         processing = true;
         try {
-            while (myGeneration === generation && queue.length) {
+            while (myGeneration === generation && isEnabled() && queue.length) {
                 const queued = queue.shift();
                 const quest = getQuest(queued.id);
                 if (!quest || quest.userStatus?.completedAt || !quest.userStatus?.enrolledAt || !isCompletable(quest)) continue;
                 activeQuestId = quest.id;
                 const type = taskType(quest);
+                if (!isTaskAllowed(type)) {
+                    activeQuestId = null;
+                    continue;
+                }
                 if (type === "ACHIEVEMENT_IN_ACTIVITY" && achievementFailed.has(quest.id)) {
                     activeQuestId = null;
                     continue;
@@ -471,7 +500,7 @@ export function createEngine({ flux, http, settings, native, desktopTransport, i
                     } else if (type === "PLAY_ON_DESKTOP") {
                         await processDesktopGame(quest, myGeneration);
                     } else if (type === "STREAM_ON_DESKTOP") {
-                        await processDesktopStream(quest);
+                        await processDesktopStream(quest, myGeneration);
                     } else if (type === "ACHIEVEMENT_IN_ACTIVITY") {
                         await processAchievement(quest, myGeneration);
                     }
@@ -540,7 +569,7 @@ export function createEngine({ flux, http, settings, native, desktopTransport, i
     }
 
     async function scan(myGeneration) {
-        if (myGeneration !== generation || scanningGeneration === myGeneration) return;
+        if (myGeneration !== generation || scanningGeneration === myGeneration || !isEnabled()) return;
         scanningGeneration = myGeneration;
         try {
             let enrolledAny = false;
@@ -561,6 +590,7 @@ export function createEngine({ flux, http, settings, native, desktopTransport, i
             if (myGeneration !== generation) return;
             for (const quest of allQuests()) {
                 if (!quest.userStatus?.enrolledAt || quest.userStatus?.completedAt || !isCompletable(quest)) continue;
+                if (!isTaskAllowed(taskType(quest))) continue;
                 if (quest.id !== activeQuestId && !queue.some(queued => queued.id === quest.id)) queue.push(quest);
             }
             void processQueue(myGeneration);
