@@ -47,6 +47,7 @@ function videoQuest(id, enrolledAt = "2020-01-01T00:00:00.000Z") {
     return {
         id,
         config: {
+            configVersion: 2,
             expiresAt: "2999-01-01T00:00:00.000Z",
             messages: { questName: `Quest ${id}` },
             taskConfig: { tasks: { WATCH_VIDEO: { target: 1 } } }
@@ -72,9 +73,9 @@ async function nextTurn() {
     await new Promise(resolve => setImmediate(resolve));
 }
 
-test("fetches quests and updates the minified quest store through Flux", async () => {
+test("never dispatches a raw quest payload into the Discord quest store", async () => {
     const { createEngine } = await loadEngine();
-    const quests = [{ id: "123", userStatus: null }];
+    const quests = [{ id: "123", user_status: null }];
     const requests = [];
     const env = runtime(async request => {
         requests.push(request);
@@ -83,9 +84,39 @@ test("fetches quests and updates the minified quest store through Flux", async (
     const engine = createEngine(env.options);
     try {
         await engine.start();
+        await nextTurn();
         assert.deepEqual(requests, [{ url: "/quests/@me" }]);
-        assert.deepEqual(env.events, [{ type: "QUESTS_FETCH_CURRENT_QUESTS_SUCCESS", quests }]);
-        assert.equal(env.questStore.getQuest("123"), quests[0]);
+        assert.deepEqual(env.events, []);
+        assert.equal(env.questStore.quests.size, 0);
+    } finally {
+        engine.stop();
+    }
+});
+
+test("processes a snake_case API quest without touching the Discord store", async () => {
+    const { createEngine } = await loadEngine();
+    const quest = {
+        id: "123",
+        config: {
+            expires_at: "2999-01-01T00:00:00.000Z",
+            config_version: 2,
+            messages: { quest_name: "Quest 123" },
+            task_config_v2: { tasks: { WATCH_VIDEO: { target: 1 } } }
+        },
+        user_status: { enrolled_at: "2020-01-01T00:00:00.000Z", progress: {} }
+    };
+    const env = runtime(async () => ({ body: { quests: [quest] } }));
+    const posts = [];
+    env.options.http.post = async request => {
+        posts.push(request);
+        return { body: { completed_at: "2026-11-16T00:00:00.000Z" } };
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        assert.deepEqual(posts.map(request => request.url), ["/quests/123/video-progress"]);
+        assert.equal(env.questStore.quests.size, 0);
     } finally {
         engine.stop();
     }
@@ -126,26 +157,19 @@ test("an invalid saved fetch interval falls back to two hours", async () => {
     }
 });
 
-test("refreshes quests when the initially unavailable quest store appears", async t => {
+test("the Discord quest store wins over the fetched snapshot", async () => {
     const { createEngine } = await loadEngine();
-    t.mock.timers.enable({ apis: ["setTimeout"] });
-    let requests = 0;
-    const env = runtime(async () => {
-        requests++;
-        return { body: { quests: [{ id: "123", userStatus: null }] } };
-    });
-    delete env.options.flux.stores.m;
+    const env = runtime(async () => ({ body: { quests: [videoQuest("123")] } }));
+    const stored = videoQuest("123");
+    stored.userStatus.completedAt = "2026-11-16T00:00:00.000Z";
+    env.questStore.quests.set("123", stored);
+    const posts = [];
+    env.options.http.post = async request => { posts.push(request); return { body: {} }; };
     const engine = createEngine(env.options);
     try {
         await engine.start();
-        assert.equal(requests, 1);
-        assert.equal(env.questStore.quests.size, 0);
-        env.options.flux.stores.m = [{}, env.questStore];
-        env.options.flux.dispatcher.dispatch({ type: "QUEST_USER_STATUS_UPDATE" });
-        t.mock.timers.tick(500);
         await nextTurn();
-        assert.equal(requests, 2);
-        assert.equal(env.questStore.getQuest("123").id, "123");
+        assert.deepEqual(posts, []);
     } finally {
         engine.stop();
     }
@@ -257,31 +281,58 @@ test("network errors do not print request credentials", async () => {
     }
 });
 
-test("cleans up a desktop game patch and its heartbeat listener when stopped", async () => {
+test("desktop game quests heartbeat through the native transport until the target", async () => {
     const { createEngine } = await loadEngine();
-    const quest = taskQuest("401", "PLAY_ON_DESKTOP", 900);
+    const quest = taskQuest("401", "PLAY_ON_DESKTOP", 90);
     const env = runtime(async request => {
         if (request.url === "/quests/@me") return { body: { quests: [quest] } };
         return { body: [{ name: "Game", executables: [{ os: "win32", name: "game.exe" }] }] };
     });
-    const gameStore = {
-        getRunningGames() { return []; },
-        getGameForPID() { return null; }
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    const heartbeats = [];
+    env.options.desktopTransport = {
+        async sendHeartbeat(args) {
+            heartbeats.push(args);
+            return { ok: true, status: 200, body: { progress: { PLAY_ON_DESKTOP: { value: 90 } }, completed_at: null } };
+        }
     };
-    const originalGetGames = gameStore.getRunningGames;
-    const originalGetGame = gameStore.getGameForPID;
-    env.options.flux.stores.RunningGameStore = gameStore;
-    env.options.isDesktop = true;
     const engine = createEngine(env.options);
     try {
         await engine.start();
         await nextTurn();
-        assert.equal(gameStore.getRunningGames()[0].id, "999");
-        assert.equal(env.subscriptions.get("QUESTS_SEND_HEARTBEAT_SUCCESS").size, 1);
+        assert.equal(heartbeats.length, 2);
+        assert.equal(heartbeats[0].questId, "401");
+        assert.equal(heartbeats[0].userToken, "discord-test-token");
+        assert.equal(heartbeats[0].applicationId, "999");
+        assert.match(heartbeats[0].executablePath, /game\.exe$/i);
+        assert.equal(heartbeats[0].terminal, false);
+        assert.equal(heartbeats[1].terminal, true);
+        assert.equal(env.events.some(event => event.type === "RUNNING_GAMES_CHANGE"), false);
+    } finally {
         engine.stop();
-        assert.equal(gameStore.getRunningGames, originalGetGames);
-        assert.equal(gameStore.getGameForPID, originalGetGame);
-        assert.equal(env.subscriptions.get("QUESTS_SEND_HEARTBEAT_SUCCESS").size, 0);
+    }
+});
+
+test("a rejected desktop heartbeat is not retried in a tight loop", async () => {
+    const { createEngine } = await loadEngine();
+    const quest = taskQuest("402", "PLAY_ON_DESKTOP", 90);
+    const env = runtime(async request => {
+        if (request.url === "/quests/@me") return { body: { quests: [quest] } };
+        return { body: [{ name: "Game", executables: [{ os: "win32", name: "game.exe" }] }] };
+    });
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    let attempts = 0;
+    env.options.desktopTransport = {
+        async sendHeartbeat() {
+            attempts++;
+            return { ok: false, status: 401, body: null };
+        }
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        assert.equal(attempts, 1);
     } finally {
         engine.stop();
     }
@@ -316,7 +367,7 @@ test("a stream patch ends only on the matching quest heartbeat", async () => {
     }
 });
 
-test("unsupported desktop quests do not block video quests on the web runtime", async () => {
+test("desktop quests without a native transport do not block video quests", async () => {
     const { createEngine } = await loadEngine();
     const quests = [taskQuest("401", "PLAY_ON_DESKTOP"), videoQuest("102")];
     const env = runtime(async () => ({ body: { quests } }));
@@ -365,27 +416,39 @@ test("stopping during a quest prevents starting the next queued quest", async ()
     }
 });
 
-test("does not process a queued quest removed from the current store", async () => {
+test("a quest missing from a later fetch is not processed", async () => {
     const { createEngine } = await loadEngine();
+    let fetchCount = 0;
+    const env = runtime(async () => {
+        fetchCount++;
+        return { body: { quests: fetchCount === 1 ? [videoQuest("101"), videoQuest("102")] : [videoQuest("101")] } };
+    });
+    const originalSetInterval = globalThis.setInterval;
+    const intervals = [];
+    globalThis.setInterval = (callback, delay) => {
+        intervals.push({ callback, delay });
+        return originalSetInterval(() => { }, 1e9);
+    };
     const firstResponse = deferred();
-    const quests = [videoQuest("101"), videoQuest("102")];
-    const env = runtime(async () => ({ body: { quests } }));
     const posts = [];
     env.options.http.post = async request => {
         posts.push(request);
-        return posts.length === 1 ? firstResponse.promise : { body: { completed_at: "2026-11-16T00:00:00Z" } };
+        return posts.length === 1 ? firstResponse.promise : { body: { completed_at: "2026-11-16T00:00:00.000Z" } };
     };
     const engine = createEngine(env.options);
     try {
         await engine.start();
         await nextTurn();
         assert.equal(posts.length, 1);
-        env.questStore.quests.delete("102");
-        firstResponse.resolve({ body: { completed_at: "2026-11-16T00:00:00Z" } });
+        await intervals.find(interval => interval.delay === 7_200_000).callback();
+        await nextTurn();
+        assert.equal(fetchCount, 2);
+        firstResponse.resolve({ body: { completed_at: "2026-11-16T00:00:00.000Z" } });
         await nextTurn();
         assert.deepEqual(posts.map(request => request.url), ["/quests/101/video-progress"]);
     } finally {
         engine.stop();
+        globalThis.setInterval = originalSetInterval;
     }
 });
 
@@ -479,17 +542,23 @@ test("a response from the previous account does not overwrite new-session quests
     let count = 0;
     const env = runtime(async () => {
         count++;
-        return count === 1 ? oldResponse.promise : { body: { quests: [{ id: "new" }] } };
+        return count === 1 ? oldResponse.promise : { body: { quests: [videoQuest("new")] } };
     });
+    const posts = [];
+    env.options.http.post = async request => {
+        posts.push(request);
+        return { body: { completed_at: "2026-11-16T00:00:00.000Z" } };
+    };
     const engine = createEngine(env.options);
     try {
         const firstStart = engine.start();
         await nextTurn();
         env.options.flux.dispatcher.dispatch({ type: "CONNECTION_OPEN" });
         await nextTurn();
-        oldResponse.resolve({ body: { quests: [{ id: "old" }] } });
+        oldResponse.resolve({ body: { quests: [videoQuest("old")] } });
         await firstStart;
-        assert.deepEqual([...env.questStore.quests.keys()], ["new"]);
+        await nextTurn();
+        assert.deepEqual(posts.map(request => request.url), ["/quests/new/video-progress"]);
     } finally {
         engine.stop();
     }

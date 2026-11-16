@@ -32,6 +32,7 @@
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { createEngine } from "./engine.js";
 import { createNative } from "./native.js";
+import { createDesktopIdentity, createDesktopTransport } from "./desktop.js";
 
 const { store } = shelter.plugin;
 const { SwitchItem, Select, SelectOption } = shelter.ui;
@@ -43,12 +44,22 @@ store.achievementBypass ??= false;
 store.autoClaim ??= false;
 store.captchaService ??= "nopecha";
 store.captchaApiKey ??= "";
+store.desktopHeartbeatSeconds ??= 60;
+store.desktopUserAgent ??= "";
+
+const hasNativeHttp = typeof window.__TAURI_INTERNALS__ !== "undefined";
 
 const engine = createEngine({
     flux: shelter.flux,
     http: shelter.http,
     settings: store,
-    native: window.__DORION_INIT__ && window.__TAURI_INTERNALS__ ? createNative(tauriFetch) : undefined,
+    native: hasNativeHttp ? createNative(tauriFetch) : undefined,
+    desktopTransport: hasNativeHttp ? createDesktopTransport(tauriFetch, {
+        identity: () => createDesktopIdentity({
+            userAgent: store.desktopUserAgent || undefined,
+            locale: typeof navigator !== "undefined" ? navigator.language : undefined
+        })
+    }) : undefined,
     isDesktop: typeof window.DiscordNative !== "undefined"
 });
 
@@ -96,6 +107,28 @@ export function settings() {
                     store.fetchIntervalMinutes = Number.isFinite(value) && value >= 30 ? value : 30;
                 }}
             />
+            <label for="quest-heartbeat-interval">Desktop heartbeat interval in seconds (15-110; the server credits at most 120s per beat)</label>
+            <input
+                id="quest-heartbeat-interval"
+                type="number"
+                min="15"
+                max="110"
+                value={store.desktopHeartbeatSeconds}
+                onChange={event => {
+                    const value = Number(event.currentTarget.value);
+                    store.desktopHeartbeatSeconds = Number.isFinite(value) ? Math.min(110, Math.max(15, value)) : 60;
+                }}
+            />
+            <label for="quest-desktop-agent">Desktop user agent override (leave empty to generate one; it must contain Electron/&lt;version&gt;)</label>
+            <input
+                id="quest-desktop-agent"
+                type="text"
+                autocomplete="off"
+                placeholder="Mozilla/5.0 ... discord/1.0 ... Chrome/... Electron/..."
+                value={store.desktopUserAgent}
+                onInput={event => { store.desktopUserAgent = event.currentTarget.value.trim(); }}
+            />
+            <p>Desktop quests are sent through Dorion's native HTTP with a desktop identity. Only quest requests are affected; chat stays on the normal web session.</p>
             <p>CAPTCHA solver</p>
             <Select value={store.captchaService} onChange={value => { store.captchaService = value; }} aria-label="CAPTCHA solver">
                 <SelectOption value="nopecha">NopeCHA</SelectOption>

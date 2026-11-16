@@ -58,11 +58,17 @@ The output is in `dist/quest-autocompleter/`.
 
 ### Dorion limitations
 
-- `PLAY_ON_DESKTOP` and `STREAM_ON_DESKTOP` require Discord's native desktop runtime. Dorion uses the web client, so the plugin skips these tasks and continues the queue.
+- `PLAY_ON_DESKTOP` runs through Dorion's native HTTP client (`@tauri-apps/plugin-http`) instead of Discord's web transport. Discord rejects quest heartbeats whose user agent has no Electron version, so the plugin sends each heartbeat with a desktop user agent and a matching `X-Super-Properties` header. Only quest requests carry that identity; chat and everything else stay on the normal web session. This path has **not** been confirmed against Discord's servers, so treat a completed quest as the only proof: check that progress rises and survives a reload.
+- `STREAM_ON_DESKTOP` still needs Discord's native desktop runtime, because the heartbeat has to reference a real, live stream key. Dorion cannot create one, so these tasks are skipped.
 - Achievement processing is off by default in the Shelter port. Its requests need a `Referer` header, which Dorion 7.0.1's Tauri HTTP backend strips, so completion may fail. An achievement that fails is not retried until the plugin restarts.
-- Video, activity, automatic enrollment, achievement, and auto-claim logic have automated tests with simulated Discord and Tauri responses. They have **not** been verified against a live Dorion session or Discord's servers.
+- Video, activity, automatic enrollment, achievement, auto-claim and desktop heartbeat logic have automated tests with simulated Discord and Tauri responses. They have **not** been verified against a live Dorion session or Discord's servers.
 - Auto-claim is off by default and needs a solver API key. The key is stored unencrypted in Shelter's local plugin storage and sent to the selected solver. A failed claim can be completed manually.
 - Achievement attempts authorize an activity application. If cleanup is interrupted or ambiguous, check Discord's **Authorized Apps** settings. Even one newly found authorization cannot be conclusively tied to this plugin if another authorization for the same application is created concurrently.
+
+### Desktop heartbeat settings
+
+- **Desktop heartbeat interval** — seconds between heartbeats, 15-110. Discord credits at most two minutes of progress per heartbeat, so a shorter interval is pointless but a longer one loses time.
+- **Desktop user agent override** — leave empty to generate one from the current platform. Any value you type must contain `Electron/<version>`; the generated `X-Super-Properties` is derived from it so the two agree.
 
 ## Setup/Install (Vencord)
 

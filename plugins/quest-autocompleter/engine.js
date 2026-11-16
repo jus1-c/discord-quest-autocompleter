@@ -4,7 +4,9 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-export function createEngine({ flux, http, settings, native, isDesktop = false }) {
+import { normalizeQuest } from "./quests.js";
+
+export function createEngine({ flux, http, settings, native, desktopTransport, isDesktop = false }) {
     const { dispatcher } = flux;
     const supportedTasks = [
         "WATCH_VIDEO", "PLAY_ON_DESKTOP", "STREAM_ON_DESKTOP",
@@ -22,9 +24,10 @@ export function createEngine({ flux, http, settings, native, isDesktop = false }
     let scanningGeneration = null;
     let claimingGeneration = null;
     let sessionController;
-    let needsQuestStoreRefresh = false;
+    const remoteQuests = new Map();
     const claimFailed = new Set();
     const claimed = new Set();
+    const enrolledIds = new Set();
     const achievementFailed = new Set();
 
     function log(...args) {
@@ -58,9 +61,10 @@ export function createEngine({ flux, http, settings, native, isDesktop = false }
         processing = false;
         scanningGeneration = null;
         claimingGeneration = null;
-        needsQuestStoreRefresh = false;
+        remoteQuests.clear();
         claimFailed.clear();
         claimed.clear();
+        enrolledIds.clear();
         achievementFailed.clear();
     }
 
@@ -77,6 +81,30 @@ export function createEngine({ flux, http, settings, native, isDesktop = false }
     function getQuestStore() {
         return Object.values(flux.stores).flat()
             .find(store => store?.quests instanceof Map && typeof store.getQuest === "function");
+    }
+
+    /** Discord's own store wins when it knows the quest; it holds the live user status. */
+    function getQuest(id) {
+        return getQuestStore()?.getQuest(id) ?? remoteQuests.get(id);
+    }
+
+    function allQuests() {
+        const merged = new Map(remoteQuests);
+        for (const quest of getQuestStore()?.quests.values() ?? []) merged.set(quest.id, quest);
+        return [...merged.values()];
+    }
+
+    function heartbeatIntervalMs() {
+        const seconds = Number(settings.desktopHeartbeatSeconds);
+        const safe = Number.isFinite(seconds) ? Math.min(110, Math.max(15, seconds)) : 60;
+        return safe * 1000;
+    }
+
+    function errorDetail(error) {
+        if (error instanceof Error && !Number.isInteger(error.status) && !Number.isInteger(error?.res?.status)) {
+            return `: ${String(error.message).slice(0, 160)}`;
+        }
+        return "";
     }
 
     function findStore(...methods) {
@@ -165,64 +193,80 @@ export function createEngine({ flux, http, settings, native, isDesktop = false }
         }
     }
 
+    async function resolveExecutablePath(applicationId, myGeneration) {
+        try {
+            const response = await http.get({ url: `/applications/public?application_ids=${applicationId}` });
+            if (myGeneration !== generation) return undefined;
+            const app = response.body?.[0];
+            const executable = (app?.executables?.find(entry => entry.os === "win32") ?? app?.executables?.[0])?.name?.replace(">", "");
+            if (!executable) return undefined;
+            return `C:\\Program Files\\${app.name ?? "Game"}\\${executable}`;
+        } catch {
+            return undefined;
+        }
+    }
+
+    /**
+     * Keeps a quest alive with native heartbeats. The server credits at most two minutes per
+     * request, so the loop heartbeats well inside that window until the task is complete.
+     */
+    async function runDesktopHeartbeat({ quest, myGeneration, taskType, target, applicationId, executablePath, streamKey }) {
+        let progress = quest.userStatus?.progress?.[taskType]?.value ?? 0;
+        while (myGeneration === generation && progress < target) {
+            const userToken = findStore("getToken")?.getToken();
+            if (!userToken) throw new Error("Discord authentication is unavailable");
+            const response = await desktopTransport.sendHeartbeat({
+                userToken,
+                questId: quest.id,
+                applicationId,
+                executablePath,
+                streamKey,
+                terminal: false,
+                signal: sessionController?.signal
+            });
+            if (myGeneration !== generation) return;
+            if (response.status === 429) {
+                const retryAfter = Number(response.body?.retry_after);
+                const wait = Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter : 10;
+                await sleep((wait + 1) * 1000);
+                continue;
+            }
+            if (!response.ok) {
+                const hint = response.status === 401 ? "; Discord did not accept the desktop identity" : "";
+                throw new Error(`Heartbeat rejected (status ${response.status})${hint}`);
+            }
+            const reported = response.body?.progress?.[taskType]?.value;
+            if (Number.isFinite(reported)) progress = reported;
+            log(`[${quest.config.messages?.questName}] Progress: ${progress}/${target}`);
+            if (response.body?.completed_at != null || progress >= target) break;
+            await sleep(heartbeatIntervalMs());
+        }
+        if (myGeneration !== generation) return;
+        const userToken = findStore("getToken")?.getToken();
+        if (!userToken) return;
+        await desktopTransport.sendHeartbeat({
+            userToken,
+            questId: quest.id,
+            applicationId,
+            executablePath,
+            streamKey,
+            terminal: true,
+            signal: sessionController?.signal
+        });
+    }
+
     async function processDesktopGame(quest, myGeneration) {
-        if (!isDesktop) {
-            console.warn(`[QuestAutocompleter] ${quest.config.messages?.questName}: PLAY_ON_DESKTOP requires the Discord desktop runtime.`);
+        if (!desktopTransport) {
+            console.warn(`[QuestAutocompleter] ${quest.config.messages?.questName}: PLAY_ON_DESKTOP needs Dorion native HTTP (Tauri).`);
             return;
         }
-        const store = findStore("getRunningGames", "getGameForPID");
-        if (!store) throw new Error("RunningGameStore is unavailable");
-        const applicationId = quest.config.application?.id ?? taskConfig(quest).tasks.PLAY_ON_DESKTOP.applications?.[0]?.id;
+        const task = taskConfig(quest).tasks.PLAY_ON_DESKTOP;
+        const applicationId = quest.config.application?.id ?? task.applications?.[0]?.id;
         if (!applicationId) throw new Error("Missing application ID");
-        const response = await http.get({ url: `/applications/public?application_ids=${applicationId}` });
+        const executablePath = await resolveExecutablePath(applicationId, myGeneration);
         if (myGeneration !== generation) return;
-        const app = response.body?.[0];
-        if (!app) throw new Error("Missing application data");
-
-        const exeName = (app.executables?.find(exe => exe.os === "win32") ?? app.executables?.[0])?.name?.replace(">", "") ?? `${app.name}.exe`;
-        const pid = Math.floor(Math.random() * 30_000) + 1000;
-        const fakeGame = {
-            cmdLine: `C:\\Program Files\\${app.name}\\${exeName}`,
-            exeName,
-            exePath: `c:/program files/${app.name.toLowerCase()}/${exeName}`,
-            hidden: false,
-            isLauncher: false,
-            id: applicationId,
-            name: app.name,
-            pid,
-            pidPath: [pid],
-            processName: app.name,
-            start: Date.now()
-        };
-        const realGames = store.getRunningGames();
-        const getRunningGames = store.getRunningGames;
-        const getGameForPID = store.getGameForPID;
-        const target = taskConfig(quest).tasks.PLAY_ON_DESKTOP.target;
-
-        await new Promise(resolve => {
-            let finished = false;
-            const cleanup = () => {
-                if (finished) return;
-                finished = true;
-                store.getRunningGames = getRunningGames;
-                store.getGameForPID = getGameForPID;
-                dispatcher.unsubscribe("QUESTS_SEND_HEARTBEAT_SUCCESS", onHeartbeat);
-                dispatcher.dispatch({ type: "RUNNING_GAMES_CHANGE", removed: [fakeGame], added: realGames, games: realGames });
-                if (activeCleanup === cleanup) activeCleanup = null;
-                resolve();
-            };
-            const onHeartbeat = data => {
-                if (data.questId !== quest.id) return;
-                const progress = quest.config.configVersion === 1
-                    ? data.userStatus?.streamProgressSeconds
-                    : data.userStatus?.progress?.PLAY_ON_DESKTOP?.value;
-                if (Number.isFinite(progress) && progress >= target) cleanup();
-            };
-            activeCleanup = cleanup;
-            dispatcher.subscribe("QUESTS_SEND_HEARTBEAT_SUCCESS", onHeartbeat);
-            store.getRunningGames = () => [fakeGame];
-            store.getGameForPID = value => value === pid ? fakeGame : null;
-            dispatcher.dispatch({ type: "RUNNING_GAMES_CHANGE", removed: realGames, added: [fakeGame], games: [fakeGame] });
+        await runDesktopHeartbeat({
+            quest, myGeneration, taskType: "PLAY_ON_DESKTOP", target: task.target, applicationId, executablePath
         });
     }
 
@@ -294,9 +338,7 @@ export function createEngine({ flux, http, settings, native, isDesktop = false }
 
     async function claimCompletedQuests(myGeneration) {
         if (!settings.autoClaim || !settings.captchaApiKey || claimingGeneration === myGeneration) return;
-        const store = getQuestStore();
-        if (!store) return;
-        const quests = [...store.quests.values()].filter(quest =>
+        const quests = allQuests().filter(quest =>
             quest.userStatus?.completedAt && !quest.userStatus?.claimedAt &&
             !claimed.has(quest.id) && !claimFailed.has(quest.id) && taskConfig(quest)?.tasks
         );
@@ -413,7 +455,7 @@ export function createEngine({ flux, http, settings, native, isDesktop = false }
         try {
             while (myGeneration === generation && queue.length) {
                 const queued = queue.shift();
-                const quest = getQuestStore()?.getQuest(queued.id);
+                const quest = getQuest(queued.id);
                 if (!quest || quest.userStatus?.completedAt || !quest.userStatus?.enrolledAt || !isCompletable(quest)) continue;
                 activeQuestId = quest.id;
                 const type = taskType(quest);
@@ -438,7 +480,7 @@ export function createEngine({ flux, http, settings, native, isDesktop = false }
                         achievementFailed.add(quest.id);
                         console.warn(`[QuestAutocompleter] Achievement failed for "${quest.config.messages?.questName}"; not retrying this session.`);
                     } else if (myGeneration === generation) {
-                        log(`Error completing "${quest.config.messages?.questName}"${errorStatus(error)}`);
+                        log(`Error completing "${quest.config.messages?.questName}"${errorStatus(error)}${errorDetail(error)}`);
                     }
                 }
                 if (myGeneration === generation) activeQuestId = null;
@@ -468,6 +510,16 @@ export function createEngine({ flux, http, settings, native, isDesktop = false }
                 body = response?.body;
                 if (status !== 429) {
                     if (status >= 400) throw new Error(`status ${status}`);
+                    enrolledIds.add(quest.id);
+                    const enrolled = normalizeQuest(body) ?? quest;
+                    remoteQuests.set(quest.id, {
+                        ...enrolled,
+                        userStatus: {
+                            ...(enrolled.userStatus ?? {}),
+                            enrolledAt: enrolled.userStatus?.enrolledAt ?? new Date().toISOString(),
+                            progress: enrolled.userStatus?.progress ?? {}
+                        }
+                    });
                     log(`Auto-accepted: ${quest.config.messages?.questName}`);
                     return true;
                 }
@@ -491,17 +543,11 @@ export function createEngine({ flux, http, settings, native, isDesktop = false }
         if (myGeneration !== generation || scanningGeneration === myGeneration) return;
         scanningGeneration = myGeneration;
         try {
-            const store = getQuestStore();
-            if (!store) return;
-            if (needsQuestStoreRefresh) {
-                needsQuestStoreRefresh = false;
-                void fetchNewQuests(myGeneration);
-                return;
-            }
             let enrolledAny = false;
             if (settings.autoAcceptQuests) {
-                const available = [...store.quests.values()].filter(quest =>
-                    !quest.userStatus?.enrolledAt && !quest.userStatus?.completedAt && isCompletable(quest)
+                const available = allQuests().filter(quest =>
+                    !quest.userStatus?.enrolledAt && !quest.userStatus?.completedAt &&
+                    !enrolledIds.has(quest.id) && isCompletable(quest)
                 );
                 for (const quest of available) {
                     if (myGeneration !== generation) return;
@@ -513,7 +559,7 @@ export function createEngine({ flux, http, settings, native, isDesktop = false }
             if (myGeneration !== generation) return;
             if (enrolledAny) await sleep(1500);
             if (myGeneration !== generation) return;
-            for (const quest of store.quests.values()) {
+            for (const quest of allQuests()) {
                 if (!quest.userStatus?.enrolledAt || quest.userStatus?.completedAt || !isCompletable(quest)) continue;
                 if (quest.id !== activeQuestId && !queue.some(queued => queued.id === quest.id)) queue.push(quest);
             }
@@ -529,11 +575,13 @@ export function createEngine({ flux, http, settings, native, isDesktop = false }
             const response = await http.get({ url: "/quests/@me" });
             if (myGeneration !== generation) return;
             if (!Array.isArray(response?.body?.quests)) throw new Error("Invalid quests response");
-            needsQuestStoreRefresh = !getQuestStore();
-            dispatcher.dispatch({
-                type: "QUESTS_FETCH_CURRENT_QUESTS_SUCCESS",
-                quests: response.body.quests
-            });
+            const next = new Map();
+            for (const raw of response.body.quests) {
+                const quest = normalizeQuest(raw);
+                if (quest) next.set(quest.id, quest);
+            }
+            remoteQuests.clear();
+            for (const [id, quest] of next) remoteQuests.set(id, quest);
             void scan(myGeneration);
         } catch (error) {
             if (myGeneration === generation) log(`Quest fetch failed${errorStatus(error)}`);

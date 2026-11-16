@@ -44,6 +44,7 @@ test("Lune builds a Shelter-loadable plugin with matching manifest hash", async 
         };
         const plugin = vm.runInNewContext(code, {
             shelter, window: {}, console, AbortController, URL,
+            navigator: { language: "en-US", userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
             setTimeout, clearTimeout, setInterval, clearInterval
         });
         assert.equal(typeof plugin.onLoad, "function");
@@ -55,7 +56,8 @@ test("Lune builds a Shelter-loadable plugin with matching manifest hash", async 
             assert.equal(shelter.plugin.store.autoClaim, false);
             assert.equal(shelter.plugin.store.achievementBypass, false);
             assert.equal(shelter.plugin.store.fetchIntervalMinutes, 120);
-            assert.equal(events[0].type, "QUESTS_FETCH_CURRENT_QUESTS_SUCCESS");
+            assert.equal(shelter.plugin.store.desktopHeartbeatSeconds, 60);
+            assert.deepEqual(events, []);
         } finally {
             plugin.onUnload();
         }
