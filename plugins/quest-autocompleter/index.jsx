@@ -67,6 +67,8 @@ const styles = `
 .qac-input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
 .qac-input[type="number"]::-webkit-outer-spin-button, .qac-input[type="number"]::-webkit-inner-spin-button { appearance: none; -webkit-appearance: none; margin: 0; }
 .qac-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-muted, #b5bac1); }
+.qac-actions { display: flex; }
+.qac-actions > * { flex: 1 1 auto; min-width: 0; white-space: nowrap; }
 .qac-advanced { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--background-modifier-accent, rgba(255, 255, 255, 0.06)); }
 .qac-summary { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 14px; font-weight: 600; color: var(--text-normal, #dbdee1); cursor: pointer; list-style: none; }
 .qac-summary::-webkit-details-marker { display: none; }
@@ -283,7 +285,9 @@ export function settings() {
                     Log progress to the console
                 </SwitchItem>
                 <div class="qac-field">
-                    <Button onClick={copyDiagnostics}>Copy diagnostics</Button>
+                    <div class="qac-actions">
+                        <Button grow onClick={copyDiagnostics}>Copy diagnostics</Button>
+                    </div>
                     <p class="qac-note">Quest names, task types and reasons for quests this plugin cannot run. Printed to the console and copied to the clipboard; it never contains your token.</p>
                 </div>
             </details>
