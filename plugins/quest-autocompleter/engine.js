@@ -615,6 +615,16 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
         }
     }
 
+    function firstApplicationId(quest) {
+        const fromConfig = quest.config?.application?.id;
+        if (fromConfig) return fromConfig;
+        for (const [, task] of taskEntries(quest)) {
+            const fromTask = task.applications?.[0]?.id;
+            if (fromTask) return fromTask;
+        }
+        return null;
+    }
+
     /**
      * Redacted snapshot for reporting a quest the plugin cannot run. It never includes the
      * account token, cookies or request headers; only quest metadata and task shapes.
@@ -640,7 +650,7 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
                 return {
                     id: quest.id,
                     name: quest.config?.messages?.questName ?? null,
-                    applicationId: quest.config?.application?.id ?? null,
+                    applicationId: firstApplicationId(quest),
                     configVersion: quest.config?.configVersion ?? null,
                     joinOperator: joinOperator(quest),
                     expiresAt: quest.config?.expiresAt ?? null,

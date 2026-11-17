@@ -1115,3 +1115,43 @@ test("diagnostics describe quests without leaking the account token", async () =
         engine.stop();
     }
 });
+
+test("diagnostics report the application id a task declares", async () => {
+    const { createEngine } = await loadEngine();
+    const quest = multiTaskQuest("902", {
+        PLAY_ON_DESKTOP: { target: 900, applications: [{ id: "777" }] }
+    });
+    delete quest.config.application;
+    const env = runtime(async () => ({ body: { quests: [quest] } }));
+    env.options.http.post = async () => ({ body: {} });
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        const report = engine.diagnostics();
+        assert.equal(report.quests[0].applicationId, "777");
+    } finally {
+        engine.stop();
+    }
+});
+
+test("diagnostics keep the achievement event name of a task", async () => {
+    const { createEngine } = await loadEngine();
+    const quest = multiTaskQuest("903", {
+        ACHIEVEMENT_IN_ACTIVITY: { target: 4, event_name: "progress" }
+    });
+    const env = runtime(async () => ({ body: { quests: [quest] } }));
+    env.options.settings.achievementBypass = true;
+    env.options.http.post = async () => ({ body: {} });
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        const task = engine.diagnostics().quests[0].tasks[0];
+        assert.equal(task.type, "ACHIEVEMENT_IN_ACTIVITY");
+        assert.equal(task.eventName, "progress");
+        assert.equal(task.target, 4);
+    } finally {
+        engine.stop();
+    }
+});
