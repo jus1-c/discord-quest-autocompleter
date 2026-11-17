@@ -1348,14 +1348,19 @@ test("a recipe that the server rejects does not claim success", async t => {
         }
     };
     const engine = createEngine(env.options);
+    const originalWarn = console.warn;
+    const warnings = [];
+    console.warn = (...args) => warnings.push(args.join(" "));
     try {
         await engine.start();
         await nextTurn();
         t.mock.timers.tick(5000);
         await nextTurn();
         assert.equal(attempts, 1);
+        assert.match(warnings.join(" "), /was not accepted/);
     } finally {
         engine.stop();
+        console.warn = originalWarn;
     }
 });
 
@@ -1399,6 +1404,25 @@ test("a recipe can reuse the plugin's own activity authorization", async t => {
         }
         const report = engine.diagnostics().quests[0];
         assert.equal(report.adapter, "recipe:arise");
+    } finally {
+        engine.stop();
+    }
+});
+
+test("diagnostics show the live progress value of each task", async () => {
+    const { createEngine } = await loadEngine();
+    const quest = videoQuest("920");
+    quest.userStatus.progress = { WATCH_VIDEO: { value: 42 } };
+    const env = runtime(async () => ({ body: { quests: [quest] } }));
+    env.options.http.post = async () => ({ body: {} });
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        const task = engine.diagnostics().quests[0].tasks[0];
+        assert.equal(task.type, "WATCH_VIDEO");
+        assert.equal(task.value, 42);
+        assert.equal(task.target, 1);
     } finally {
         engine.stop();
     }

@@ -516,7 +516,7 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
                 } catch (error) {
                     if (myGeneration === generation && type === "ACHIEVEMENT_IN_ACTIVITY") {
                         achievementFailed.add(quest.id);
-                        console.warn(`[QuestAutocompleter] Achievement failed for "${quest.config.messages?.questName}"; not retrying this session.`);
+                        console.warn(`[QuestAutocompleter] Achievement failed for "${quest.config.messages?.questName}"${errorStatus(error)}${errorDetail(error)}; not retrying this session.`);
                     } else if (myGeneration === generation) {
                         log(`Error completing "${quest.config.messages?.questName}"${errorStatus(error)}${errorDetail(error)}`);
                     }
@@ -676,6 +676,7 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
                     tasks: taskEntries(quest).map(([type, task]) => ({
                         type,
                         target: task.target,
+                        value: quest.userStatus?.progress?.[type]?.value ?? 0,
                         eventName: task.event_name ?? task.eventName ?? null
                     })),
                     chosenTask: choice.type ?? null,
