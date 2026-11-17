@@ -31,20 +31,19 @@ The Shelter port is separate from the Vencord plugin. It targets Dorion's web cl
 
 ### Install from a URL
 
-The plugin must first be published. Adding the source files to a repository alone does not make the URL available.
+Repository: <https://github.com/jus1-c/discord-quest-autocompleter>
 
-1. Push the changes to the repository's `main` branch.
-2. In GitHub repository settings, open **Pages** and select **GitHub Actions** as the build and deployment source.
-3. Run the **Build and deploy Shelter plugin** workflow, or push another commit to `main`. Wait for the workflow to succeed.
-4. In Dorion, open Discord **User Settings → Shelter → Plugins → Install Plugin**, then enter:
+1. Open Discord **User Settings → Shelter → Plugins → Install Plugin** in Dorion and enter:
 
    ```text
-   https://<owner>.github.io/<repository>/quest-autocompleter/
+   https://jus1-c.github.io/discord-quest-autocompleter/quest-autocompleter/
    ```
 
-   Replace `<owner>` and `<repository>` with the GitHub account and repository name. The URL serves the built `plugin.json` and `plugin.js`, not the GitHub source page.
+   That URL serves the built `plugin.json` and `plugin.js` of the `main` branch, not the GitHub source page. Shelter fetches updates from the same URL, so a new build on `main` arrives the next time the plugin is loaded.
 
-The workflow runs tests and builds with Lune before deploying. Shelter can fetch updates from the same URL. Only install plugins from a source you trust: the URL owner can change the plugin code later.
+2. The build and deployment run in GitHub Actions (`.github/workflows/shelter-pages.yml`): it runs the tests, builds with Lune and publishes `dist/` to GitHub Pages. **Pages** must be set to **GitHub Actions** as its source in the repository settings; after that, every push to `main` publishes by itself.
+
+Only install plugins from a source you trust: the URL owner can change the plugin code later.
 
 For local development:
 
