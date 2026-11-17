@@ -113,3 +113,80 @@ test("describing a valid document counts the adapters", async () => {
     const { describeRecipes } = await loadRecipes();
     assert.match(describeRecipes(JSON.stringify([valid])), /1 custom adapter/);
 });
+
+test("a setup step can capture a value for later requests", async () => {
+    const { parseRecipes } = await loadRecipes();
+    const result = parseRecipes(JSON.stringify([{
+        id: "capture",
+        match: { applicationId: "1" },
+        setup: [{
+            url: "https://{applicationId}.discordsays.com/.proxy/acf/arise/register",
+            headers: { "X-Discord-Activity-Id": "{applicationId}" },
+            save: { authToken: "body.authToken" }
+        }],
+        report: {
+            url: "https://{applicationId}.discordsays.com/.proxy/acf/quest/progress",
+            headers: { "X-Auth-Token": "{authToken}" },
+            body: { progress: "{value}" },
+            successPath: "status",
+            successEquals: "ok"
+        }
+    }]));
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.recipes[0].captures, ["authToken"]);
+    assert.equal(result.recipes[0].report.successPath, "status");
+    assert.equal(result.recipes[0].report.successEquals, "ok");
+});
+
+test("a placeholder that nothing captures is still rejected", async () => {
+    const { parseRecipes } = await loadRecipes();
+    const result = parseRecipes(JSON.stringify([{
+        ...valid,
+        report: { ...valid.report, body: { value: "{authToken}" } }
+    }]));
+    assert.equal(result.recipes.length, 0);
+    assert.match(result.errors[0], /Unknown placeholder/);
+});
+
+test("setup steps are capped", async () => {
+    const { parseRecipes } = await loadRecipes();
+    const step = { url: "https://discord.com/api/v9/x", save: { a: "b" } };
+    const result = parseRecipes(JSON.stringify([{ ...valid, setup: [step, step, step, step, step, step] }]));
+    assert.equal(result.recipes.length, 0);
+    assert.match(result.errors[0], /at most/);
+});
+
+test("a setup step can ask the plugin for the activity authorization", async () => {
+    const { parseRecipes } = await loadRecipes();
+    const result = parseRecipes(JSON.stringify([{
+        id: "arise",
+        match: { applicationId: "1557799582732124221" },
+        setup: [{ kind: "activityAuthorize", save: { token: "token" } }],
+        report: {
+            url: "https://{applicationId}.discordsays.com/.proxy/acf/quest/progress",
+            auth: "none",
+            headers: { "X-Auth-Token": "{token}" },
+            body: { progress: "{value}", quest_id: "{questId}" }
+        }
+    }]));
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.recipes[0].captures, ["token"]);
+    assert.equal(result.recipes[0].setup[0].kind, "activityAuthorize");
+});
+
+test("an unknown setup kind is rejected", async () => {
+    const { parseRecipes } = await loadRecipes();
+    const result = parseRecipes(JSON.stringify([{
+        ...valid,
+        setup: [{ kind: "runArbitraryCode", save: { a: "b" } }]
+    }]));
+    assert.equal(result.recipes.length, 0);
+    assert.match(result.errors[0], /kind/);
+});
+
+test("a kind step without a save is rejected", async () => {
+    const { parseRecipes } = await loadRecipes();
+    const result = parseRecipes(JSON.stringify([{ ...valid, setup: [{ kind: "activityAuthorize" }] }]));
+    assert.equal(result.recipes.length, 0);
+    assert.match(result.errors[0], /save/);
+});

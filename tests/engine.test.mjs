@@ -1271,3 +1271,135 @@ test("a recipe that does not match leaves the quest to the built in adapter", as
         engine.stop();
     }
 });
+
+test("a recipe can run a setup step and use what it captured", async t => {
+    const { createEngine } = await loadEngine();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const env = runtime(async () => ({ body: { quests: [achievementQuest("913", 2)] } }));
+    env.options.settings.achievementBypass = true;
+    env.options.settings.customAdapters = JSON.stringify([{
+        id: "arise",
+        match: { applicationId: "999", taskTypes: ["ACHIEVEMENT_IN_ACTIVITY"] },
+        setup: [{
+            url: "https://{applicationId}.discordsays.com/.proxy/acf/arise/register",
+            headers: { "X-Discord-Activity-Id": "{applicationId}" },
+            save: { authToken: "body.authToken" }
+        }],
+        report: {
+            url: "https://{applicationId}.discordsays.com/.proxy/acf/quest/progress",
+            headers: { "X-Auth-Token": "{authToken}" },
+            body: { progress: "{value}", quest_id: "{questId}" },
+            step: 1,
+            intervalSeconds: 5,
+            successPath: "status"
+        }
+    }]);
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    const calls = [];
+    env.options.native = {
+        async request(url, options) {
+            calls.push({ url, headers: options.headers, body: options.body });
+            if (url.endsWith("/arise/register")) return { ok: true, status: 200, body: { authToken: "tok-123" } };
+            return { ok: true, status: 200, body: { status: "ok" } };
+        }
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        for (let i = 0; i < 5; i++) {
+            t.mock.timers.tick(5000);
+            await nextTurn();
+        }
+        assert.equal(calls.length, 3);
+        assert.match(calls[0].url, /\/arise\/register$/);
+        assert.equal(calls[0].headers["X-Discord-Activity-Id"], "999");
+        assert.match(calls[1].url, /\/quest\/progress$/);
+        assert.equal(calls[1].headers["X-Auth-Token"], "tok-123");
+        assert.deepEqual(calls.slice(1).map(call => call.body), [
+            { progress: 1, quest_id: "913" },
+            { progress: 2, quest_id: "913" }
+        ]);
+    } finally {
+        engine.stop();
+    }
+});
+
+test("a recipe that the server rejects does not claim success", async t => {
+    const { createEngine } = await loadEngine();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const env = runtime(async () => ({ body: { quests: [achievementQuest("914", 4)] } }));
+    env.options.settings.achievementBypass = true;
+    env.options.settings.customAdapters = JSON.stringify([{
+        id: "reject",
+        match: { applicationId: "999" },
+        report: {
+            url: "https://discord.com/api/v9/quests/{questId}/heartbeat",
+            body: { progress: "{value}" },
+            successPath: "status"
+        }
+    }]);
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    let attempts = 0;
+    env.options.native = {
+        async request() {
+            attempts++;
+            return { ok: true, status: 200, body: { status: "error" } };
+        }
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        t.mock.timers.tick(5000);
+        await nextTurn();
+        assert.equal(attempts, 1);
+    } finally {
+        engine.stop();
+    }
+});
+
+test("a recipe can reuse the plugin's own activity authorization", async t => {
+    const { createEngine } = await loadEngine();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const env = runtime(async request => {
+        if (request.url === "/quests/@me") return { body: { quests: [achievementQuest("915", 2)] } };
+        if (request.url === "/oauth2/tokens") return { body: [] };
+        if (request.url === "/oauth2/authorize") return { body: { location: "https://example.com/?code=abc" } };
+        return { body: { ticket: "ticket" } };
+    });
+    env.options.settings.achievementBypass = true;
+    env.options.settings.customAdapters = JSON.stringify([{
+        id: "arise",
+        match: { applicationId: "999" },
+        setup: [{ kind: "activityAuthorize", save: { token: "token" } }],
+        report: {
+            url: "https://{applicationId}.discordsays.com/.proxy/acf/quest/progress",
+            auth: "none",
+            headers: { "X-Auth-Token": "{token}" },
+            body: { progress: "{value}", quest_id: "{questId}" },
+            intervalSeconds: 5,
+            successPath: "status"
+        }
+    }]);
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    env.options.native = {
+        async discordsaysAuthorize() { return { ok: true, body: { token: "activity-token" } }; },
+        async request(url, options) {
+            return { ok: true, status: 200, body: { status: "ok", seen: options.headers["X-Auth-Token"] } };
+        }
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        for (let i = 0; i < 4; i++) {
+            t.mock.timers.tick(5000);
+            await nextTurn();
+        }
+        const report = engine.diagnostics().quests[0];
+        assert.equal(report.adapter, "recipe:arise");
+    } finally {
+        engine.stop();
+    }
+});

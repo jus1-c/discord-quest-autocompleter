@@ -6,6 +6,12 @@
  * A recipe describes how a quest's own application reports progress, without running any
  * pasted code. It is validated before use and every request is restricted to Discord hosts,
  * so a recipe cannot redirect the account token somewhere else.
+ *
+ * Shape:
+ *   { id, match, setup?, report, finish? }
+ *   setup  - ordered requests that hand out a token or session; each may `save` a value
+ *   report - one request repeated while the quest needs progress
+ *   finish - one request after the loop
  */
 
 const PLACEHOLDERS = ["questId", "applicationId", "target", "value", "attempt", "eventName"];
@@ -14,6 +20,8 @@ const METHODS = ["POST", "GET", "DELETE"];
 const DISCORD_URL = /^https:\/\/discord\.com\/api\/v\d+\//;
 const DISCORDS_SAYS_URL = /^https:\/\/\{applicationId\}\.discordsays\.com\//;
 const MAX_DOCUMENT_LENGTH = 8000;
+const MAX_SETUP_STEPS = 5;
+const SETUP_KINDS = ["activityAuthorize"];
 
 function clampNumber(value, fallback, min, max) {
     const number = Number(value);
@@ -21,21 +29,21 @@ function clampNumber(value, fallback, min, max) {
     return Math.min(max, Math.max(min, number));
 }
 
-function checkPlaceholders(text, where) {
-    for (const match of String(text).matchAll(/\{([A-Za-z]+)\}/g)) {
-        if (!PLACEHOLDERS.includes(match[1])) {
+function checkPlaceholders(text, where, allowed = PLACEHOLDERS) {
+    for (const match of String(text).matchAll(/\{([A-Za-z][A-Za-z0-9]*)\}/g)) {
+        if (!allowed.includes(match[1])) {
             throw new Error(`Unknown placeholder {${match[1]}} in ${where}`);
         }
     }
 }
 
-function normalizeRequest(raw, where) {
+function normalizeRequest(raw, where, allowed) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where} must be an object`);
     if (typeof raw.url !== "string") throw new Error(`${where}.url must be a string`);
     if (!DISCORD_URL.test(raw.url) && !DISCORDS_SAYS_URL.test(raw.url)) {
         throw new Error(`${where}.url must point at discord.com or {applicationId}.discordsays.com over https`);
     }
-    checkPlaceholders(raw.url, `${where}.url`);
+    checkPlaceholders(raw.url, `${where}.url`, allowed);
 
     const method = raw.method === undefined ? "POST" : String(raw.method).toUpperCase();
     if (!METHODS.includes(method)) throw new Error(`${where}.method must be POST, GET or DELETE`);
@@ -47,23 +55,40 @@ function normalizeRequest(raw, where) {
             throw new Error(`${where}.headers cannot set ${key}; the plugin owns Authorization, Cookie and Host`);
         }
     }
-    checkPlaceholders(Object.values(headers).join(" "), `${where}.headers`);
+    checkPlaceholders(Object.values(headers).join(" "), `${where}.headers`, allowed);
 
     if (raw.body !== undefined) {
         if (!raw.body || typeof raw.body !== "object") throw new Error(`${where}.body must be an object`);
-        checkPlaceholders(JSON.stringify(raw.body), `${where}.body`);
+        checkPlaceholders(JSON.stringify(raw.body), `${where}.body`, allowed);
     }
 
     const auth = raw.auth === undefined ? "discord" : raw.auth;
     if (auth !== "discord" && auth !== "none") throw new Error(`${where}.auth must be "discord" or "none"`);
 
-    return {
-        url: raw.url,
-        method,
-        headers,
-        body: raw.body,
-        auth
-    };
+    return { url: raw.url, method, headers, body: raw.body, auth };
+}
+
+function normalizeSetupStep(raw, index, allowed) {
+    if (raw && raw.kind !== undefined) {
+        if (!SETUP_KINDS.includes(raw.kind)) throw new Error(`setup[${index}].kind must be one of ${SETUP_KINDS.join(", ")}`);
+        const savedByKind = raw.save === undefined ? {} : raw.save;
+        if (!savedByKind || typeof savedByKind !== "object" || Object.keys(savedByKind).length === 0) {
+            throw new Error(`setup[${index}] kind "${raw.kind}" needs a save object`);
+        }
+        for (const [name, path] of Object.entries(savedByKind)) {
+            if (!/^[A-Za-z][A-Za-z0-9]{0,23}$/.test(name)) throw new Error(`setup[${index}].save has an invalid name "${name}"`);
+            if (typeof path !== "string" || !path) throw new Error(`setup[${index}].save.${name} must be a dotted path`);
+        }
+        return { kind: raw.kind, save: savedByKind };
+    }
+    const step = normalizeRequest(raw, `setup[${index}]`, allowed);
+    const save = raw.save === undefined ? {} : raw.save;
+    if (!save || typeof save !== "object" || Array.isArray(save)) throw new Error(`setup[${index}].save must be an object`);
+    for (const [name, path] of Object.entries(save)) {
+        if (!/^[A-Za-z][A-Za-z0-9]{0,23}$/.test(name)) throw new Error(`setup[${index}].save has an invalid name "${name}"`);
+        if (typeof path !== "string" || !path) throw new Error(`setup[${index}].save.${name} must be a dotted path`);
+    }
+    return { ...step, save };
 }
 
 function normalizeRecipe(raw, index) {
@@ -86,20 +111,34 @@ function normalizeRecipe(raw, index) {
         throw new Error(`recipe "${raw.id}" must match on an applicationId, questId, taskType or eventName`);
     }
 
-    const report = normalizeRequest(raw.report, `recipe "${raw.id}" report`);
+    const setupRaw = raw.setup === undefined ? [] : raw.setup;
+    if (!Array.isArray(setupRaw)) throw new Error(`recipe "${raw.id}" setup must be an array`);
+    if (setupRaw.length > MAX_SETUP_STEPS) throw new Error(`recipe "${raw.id}" allows at most ${MAX_SETUP_STEPS} setup steps`);
+    const setup = setupRaw.map((step, stepIndex) => normalizeSetupStep(step, stepIndex, PLACEHOLDERS));
+    const captures = setup.flatMap(step => Object.keys(step.save));
+    const allowed = [...PLACEHOLDERS, ...captures];
+
+    if (!raw.report || typeof raw.report !== "object") throw new Error(`recipe "${raw.id}" needs a report object`);
+    const report = normalizeRequest(raw.report, `recipe "${raw.id}" report`, allowed);
     const step = raw.report.step === "target" ? "target" : clampNumber(raw.report.step, 1, 1, 100000);
-    const valueField = raw.report.valueField === undefined ? null : String(raw.report.valueField);
+
+    const successPath = raw.report.successPath === undefined ? null : String(raw.report.successPath);
+    const successEquals = raw.report.successEquals === undefined ? "ok" : String(raw.report.successEquals);
 
     return {
         id: raw.id,
         match: conditions,
+        captures,
+        setup,
         report: {
             ...report,
             step,
-            valueField,
+            valueField: raw.report.valueField === undefined ? null : String(raw.report.valueField),
+            successPath,
+            successEquals,
             intervalSeconds: clampNumber(raw.report.intervalSeconds, 20, 5, 120)
         },
-        finish: raw.finish === undefined ? null : normalizeRequest(raw.finish, `recipe "${raw.id}" finish`)
+        finish: raw.finish === undefined ? null : normalizeRequest(raw.finish, `recipe "${raw.id}" finish`, allowed)
     };
 }
 
@@ -142,13 +181,13 @@ export function describeRecipes(text) {
 }
 
 function fill(template, values) {
-    return String(template).replace(/\{([A-Za-z]+)\}/g, (match, key) => String(values[key] ?? ""));
+    return String(template).replace(/\{([A-Za-z][A-Za-z0-9]*)\}/g, (match, key) => String(values[key] ?? ""));
 }
 
 /** Keeps numbers as numbers when a placeholder is the whole value. */
 function substitute(value, values) {
     if (typeof value === "string") {
-        const exact = /^\{([A-Za-z]+)\}$/.exec(value);
+        const exact = /^\{([A-Za-z][A-Za-z0-9]*)\}$/.exec(value);
         if (exact) {
             const replacement = values[exact[1]];
             return typeof replacement === "number" ? replacement : String(replacement ?? "");
@@ -169,6 +208,20 @@ function readPath(source, path) {
     return path.split(".").reduce((value, key) => (value == null ? undefined : value[key]), source);
 }
 
+/** Accepts "token", "body.token" or "response.body.token" so a recipe need not guess. */
+function savedValue(response, path) {
+    const candidates = [path];
+    if (path.startsWith("body.")) candidates.push(path.slice("body.".length));
+    if (path.startsWith("response.")) candidates.push(path.slice("response.".length));
+    for (const candidate of candidates) {
+        for (const source of [response.body, response]) {
+            const value = readPath(source, candidate);
+            if (value !== undefined && value !== null) return value;
+        }
+    }
+    return undefined;
+}
+
 function matches(recipe, quest, context) {
     const { applicationId, taskType, eventName } = context;
     if (recipe.match.applicationId.length && !recipe.match.applicationId.includes(String(applicationId ?? ""))) return false;
@@ -178,35 +231,36 @@ function matches(recipe, quest, context) {
     return true;
 }
 
-export function createRecipeAdapter(recipe, { native }) {
+export function createRecipeAdapter(recipe, { native, grantActivity }) {
     return {
         id: `recipe:${recipe.id}`,
         matchesQuest(quest, context) {
             return matches(recipe, quest, context);
         },
-        async run({ quest, task, applicationId, taskType, eventName, isCurrent, signal, log, getToken, sleep }) {
+        async run({ quest, task, applicationId, taskType, eventName, isCurrent, signal, log, warn, getToken, sleep }) {
             if (typeof native?.request !== "function") throw new Error("Dorion native HTTP is unavailable");
             const target = Math.max(1, Number(task?.target) || 1);
             const step = recipe.report.step === "target" ? target : Math.max(1, recipe.report.step);
-            const values = () => ({
+            const saved = {};
+            const values = extra => ({
                 questId: quest.id,
                 applicationId: applicationId ?? "",
                 target,
-                eventName: eventName ?? ""
+                eventName: eventName ?? "",
+                ...saved,
+                ...extra
             });
+            const questName = quest.config?.messages?.questName;
 
             async function send(request, extra) {
-                const base = values();
-                const substitutions = { ...base, ...extra };
-                const headers = { "Content-Type": "application/json", ...request.headers };
+                const substitutions = values(extra);
+                const headers = { "Content-Type": "application/json", ...substitute(request.headers, substitutions) };
                 if (request.auth !== "none") {
                     const token = getToken?.();
                     if (!token) throw new Error("Discord authentication is unavailable");
                     headers.Authorization = token;
                 }
-                const body = request.body === undefined
-                    ? undefined
-                    : substitute(request.body, substitutions);
+                const body = request.body === undefined ? undefined : substitute(request.body, substitutions);
                 const response = await native.request(fill(request.url, substitutions), {
                     method: request.method,
                     headers,
@@ -222,8 +276,34 @@ export function createRecipeAdapter(recipe, { native }) {
                 return response;
             }
 
+            const cleanups = [];
+            try {
+            for (const setupStep of recipe.setup) {
+                if (setupStep.kind === "activityAuthorize") {
+                    if (typeof grantActivity !== "function") throw new Error("Activity authorization is unavailable in recipes here");
+                    const authorization = await grantActivity({
+                        applicationId, questId: quest.id, isCurrent, signal, warn
+                    });
+                    cleanups.push(authorization.cleanup);
+                    for (const [name, path] of Object.entries(setupStep.save)) {
+                        const value = readPath({ ...authorization }, path);
+                        if (value === undefined || value === null) throw new Error(`Activity authorization did not provide ${path}`);
+                        saved[name] = value;
+                    }
+                    log(`[${questName}] Activity authorization ready`);
+                    continue;
+                }
+                const response = await send(setupStep);
+                if (!isCurrent()) return;
+                for (const [name, path] of Object.entries(setupStep.save)) {
+                    const value = savedValue(response, path);
+                    if (value === undefined) throw new Error(`Recipe setup did not return ${path}`);
+                    saved[name] = value;
+                }
+                log(`[${questName}] Recipe setup: ${setupStep.method} ${new URL(fill(setupStep.url, values())).pathname}`);
+            }
+
             let value = Number(quest.userStatus?.progress?.[taskType]?.value) || 0;
-            const questName = quest.config?.messages?.questName;
             const maxAttempts = Math.min(200, Math.ceil((target - value) / step) + 2);
             for (let attempt = 1; attempt <= maxAttempts && isCurrent(); attempt++) {
                 value = Math.min(target, value + step);
@@ -232,6 +312,12 @@ export function createRecipeAdapter(recipe, { native }) {
                 if (response.status === 429) {
                     value = Math.max(0, value - step);
                     continue;
+                }
+                if (recipe.report.successPath) {
+                    const actual = readPath(response.body, recipe.report.successPath);
+                    if (String(actual) !== recipe.report.successEquals) {
+                        throw new Error(`Recipe progress was not accepted (server said ${JSON.stringify(actual ?? null)})`);
+                    }
                 }
                 const reported = Number(readPath(response.body, recipe.report.valueField));
                 if (Number.isFinite(reported) && reported > 0) value = reported;
@@ -242,6 +328,11 @@ export function createRecipeAdapter(recipe, { native }) {
 
             if (recipe.finish && isCurrent()) {
                 await send(recipe.finish, { value, attempt: maxAttempts });
+            }
+            } finally {
+                for (const cleanup of cleanups.reverse()) {
+                    try { await cleanup(); } catch { }
+                }
             }
         }
     };
