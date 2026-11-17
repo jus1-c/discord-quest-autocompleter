@@ -52,6 +52,7 @@ store.fetchIntervalMinutes ??= 120;
 store.desktopHeartbeatSeconds ??= 60;
 store.desktopUserAgent ??= "";
 store.customAdapters ??= "";
+store.useBuiltInRecipes ??= true;
 store.captchaService ??= "nopecha";
 store.captchaApiKey ??= "";
 
@@ -287,6 +288,13 @@ export function settings() {
                 >
                     Log progress to the console
                 </SwitchItem>
+                <SwitchItem
+                    checked={store.useBuiltInRecipes}
+                    note="Ships a recipe for Arise activities such as Audible's Exoplanet. Turn it off to run only your own recipes."
+                    onChange={value => { store.useBuiltInRecipes = value; }}
+                >
+                    Use built-in recipes
+                </SwitchItem>
                 <div class="qac-field">
                     <label class="qac-label" for="qac-recipes">Custom adapters (JSON)</label>
                     <textarea
@@ -299,7 +307,7 @@ export function settings() {
                         onInput={event => { store.customAdapters = event.currentTarget.value; }}
                     />
                     <p class="qac-note">{describeRecipes(store.customAdapters)}</p>
-                    <p class="qac-note">A recipe only reaches discord.com and {`{applicationId}`}.discordsays.com and cannot set your Authorization header. Recipes run before the built in adapters; leave this empty to use them alone.</p>
+                    <p class="qac-note">A recipe only reaches discord.com and {`{applicationId}`}.discordsays.com and cannot set your Authorization header. Recipes run before the built in adapters; leave this empty to use the built-in ones alone.</p>
                 </div>
                 <div class="qac-field">
                     <div class="qac-actions">

@@ -16,7 +16,7 @@ function taskOf(quest, type) {
     return tasks?.[type];
 }
 
-export function createAdapters({ native, http, getRecipeText }) {
+export function createAdapters({ native, http, getRecipeTexts }) {
     const activityAuth = createActivityAuth({ native, http });
 
     const acf = {
@@ -38,7 +38,9 @@ export function createAdapters({ native, http, getRecipeText }) {
                     done = Math.min(task.target, done + Math.floor(Math.random() * 20) + 30);
                     const progress = await native.discordsaysProgress({
                         appId: applicationId, questId: quest.id, referrer: authorization.referrer,
-                        token: authorization.token, progress: done, signal
+                        ticket: authorization.ticket, token: authorization.token, progress: done,
+                        userAgent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
+                        signal
                     });
                     if (!isCurrent()) return;
                     if (!progress.ok) throw new Error("Activity progress failed");
@@ -52,17 +54,44 @@ export function createAdapters({ native, http, getRecipeText }) {
     };
 
     const adapters = [acf];
+
+    function recipeSources() {
+        const list = typeof getRecipeTexts === "function" ? getRecipeTexts() : [];
+        return (Array.isArray(list) ? list : []).filter(entry => entry && String(entry.text ?? "").trim());
+    }
+
+    /** One line that says which recipes are in play, so a console log explains a choice. */
+    function describe() {
+        const sources = recipeSources();
+        if (!sources.length) return "recipes: none";
+        return sources.map(({ label, text }) => {
+            const { recipes, errors } = parseRecipes(text);
+            if (errors.length) return `${label}: ${errors.length} problem(s): ${errors[0]}`;
+            return `${label}: ${recipes.length ? recipes.map(recipe => recipe.id).join(", ") : "none"}`;
+        }).join(" | ");
+    }
+
     return {
         ids: adapters.map(adapter => adapter.id),
+        describe,
         grantActivity: activityAuth.grant,
-        /** Recipes are the user's explicit instruction, so they win over the built in ones. */
+        /**
+         * Sources are tried in the order the engine lists them: shipped recipes first, then the
+         * user's own document, then the adapters compiled into the plugin.
+         */
         find(quest, context = {}) {
-            const text = typeof getRecipeText === "function" ? getRecipeText() : "";
-            for (const recipe of parseRecipes(text).recipes) {
-                const adapter = createRecipeAdapter(recipe, { native, grantActivity: activityAuth.grant });
-                if (adapter.matchesQuest(quest, context)) return adapter;
+            for (const { text } of recipeSources()) {
+                for (const recipe of parseRecipes(text).recipes) {
+                    const adapter = createRecipeAdapter(recipe, { native, grantActivity: activityAuth.grant });
+                    if (!adapter.matchesQuest(quest, context)) continue;
+                    // The handshake must address the application the recipe named, which is not
+                    // always the first application id on the quest.
+                    const applicationId = adapter.applicationIdFor(context);
+                    if (applicationId) adapter.applicationId = applicationId;
+                    return adapter;
+                }
             }
-            return adapters.find(adapter => adapter.matches(quest)) ?? null;
+            return adapters.find(adapter => adapter.matches(quest, context)) ?? null;
         }
     };
 }

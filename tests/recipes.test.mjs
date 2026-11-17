@@ -174,6 +174,60 @@ test("a setup step can ask the plugin for the activity authorization", async () 
     assert.equal(result.recipes[0].setup[0].kind, "activityAuthorize");
 });
 
+test("a recipe can match an application id the task carries", async () => {
+    const { createRecipeAdapter } = await loadRecipes();
+    const adapter = createRecipeAdapter({
+        id: "a",
+        match: { applicationId: ["1557799582732124221"], questId: [], taskType: ["ACHIEVEMENT_IN_ACTIVITY"], eventName: [] },
+        captures: [],
+        setup: [],
+        report: { url: "https://discord.com/api/v9/x", method: "POST", headers: {}, body: undefined, auth: "discord", step: 1, valueField: null, successPath: null, successEquals: "ok", intervalSeconds: 20 },
+        finish: null
+    }, {});
+    const quest = { id: "1", config: { application: { id: "777" } } };
+    const context = { applicationId: "777", applicationIds: ["777", "1557799582732124221"], taskType: "ACHIEVEMENT_IN_ACTIVITY" };
+    assert.equal(adapter.matchesQuest(quest, context), true);
+    assert.equal(adapter.applicationIdFor(context), "1557799582732124221");
+    assert.equal(adapter.matchesQuest(quest, { ...context, applicationIds: ["777"] }), false);
+});
+
+test("an activityAuthorize step can carry the activity's own headers and body", async () => {
+    const { parseRecipes } = await loadRecipes();
+    const result = parseRecipes(JSON.stringify([{
+        id: "arise",
+        match: { applicationId: "1557799582732124221" },
+        setup: [{
+            kind: "activityAuthorize",
+            headers: { "X-Arise-Client": "client", "X-Discord-Hostname": "{applicationId}.discordsays.com" },
+            body: { activityId: "{applicationId}" },
+            save: { token: "token", ticket: "ticket" }
+        }],
+        report: {
+            url: "https://{applicationId}.discordsays.com/.proxy/acf/quest/progress?discord_proxy_ticket={ticket}",
+            auth: "none",
+            headers: { "X-Auth-Token": "{token}" },
+            body: { progress: "{value}" }
+        }
+    }]));
+    assert.deepEqual(result.errors, []);
+    const step = result.recipes[0].setup[0];
+    assert.deepEqual(step.headers, { "X-Arise-Client": "client", "X-Discord-Hostname": "{applicationId}.discordsays.com" });
+    assert.deepEqual(step.body, { activityId: "{applicationId}" });
+    assert.deepEqual(result.recipes[0].captures, ["token", "ticket"]);
+    // A ticket captured by the authorize step is usable by the requests after it.
+    assert.match(result.recipes[0].report.url, /\{ticket\}/);
+});
+
+test("an activityAuthorize step still cannot set the account's own headers", async () => {
+    const { parseRecipes } = await loadRecipes();
+    const result = parseRecipes(JSON.stringify([{
+        ...valid,
+        setup: [{ kind: "activityAuthorize", headers: { Authorization: "stolen" }, save: { token: "token" } }]
+    }]));
+    assert.equal(result.recipes.length, 0);
+    assert.match(result.errors[0], /cannot set Authorization/);
+});
+
 test("an unknown setup kind is rejected", async () => {
     const { parseRecipes } = await loadRecipes();
     const result = parseRecipes(JSON.stringify([{

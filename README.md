@@ -65,7 +65,16 @@ Open the gear icon on the plugin card in **Shelter → Plugins**.
 - **Prefer the desktop task** — on by default. A quest can offer several platforms (for example desktop, Xbox and PlayStation at once); with this on the plugin runs the desktop task instead of the first one the quest lists. It never changes the platform your reward is redeemable on.
 - **Quest families** — video, play desktop and activity are on; stream desktop and achievement are off because both are experimental.
 - **Claim rewards automatically** — off by default, plus the CAPTCHA solver and its API key.
-- **Advanced** — quest refresh interval, desktop heartbeat interval, desktop user agent override, console logging and **Copy diagnostics**.
+- **Advanced** — quest refresh interval, desktop heartbeat interval, desktop user agent override, console logging, built-in recipes, custom adapters and **Copy diagnostics**.
+
+Activity quests are the only family whose console output explains itself before anything is attempted:
+
+```
+[QuestAutocompleter] Activity quest "Audible's Exoplanet": apps [1557799582732124221], built-in: arise-activity | custom: none
+[QuestAutocompleter] Activity protocol: recipe:arise-activity for "Audible's Exoplanet"
+```
+
+The first line is there so a quest that is not finishing can be diagnosed without a debugger: it lists every application id the quest carries and which recipes parsed (or the first parse problem).
 
 ### Quests the plugin cannot run
 
@@ -77,7 +86,7 @@ Application-tracked quests live in `adapters.js`. Each protocol is one adapter w
 
 ### Custom adapters (recipes)
 
-A quest whose application reports its own progress can often be supported without a new build. Paste a recipe into **Advanced → Custom adapters (JSON)** and the plugin runs it before the built-in adapters.
+A quest whose application reports its own progress can often be supported without a new build. Recipes are checked in this order: the built-in ones first (see **Use built-in recipes**), then **Advanced → Custom adapters (JSON)**, then the adapters compiled into the plugin. Turn the built-in switch off when you want your own recipe to take over one of those quests.
 
 ```json
 [
@@ -104,57 +113,74 @@ A quest whose application reports its own progress can often be supported withou
 
 Safety limits: a recipe may only call `https://discord.com/api/vN/...` or `https://{applicationId}.discordsays.com/...`, cannot set `Authorization`, `Cookie` or `Host`, the interval is clamped to 5-120 seconds, and the document is capped at 8000 characters. Recipes are declarative JSON — no pasted code is executed. A recipe is still only as good as the request it names: Discord may reject progress the application never produced.
 
-Recipes also accept a `setup` array that runs before the progress loop. A setup step can be a plain request with `"save": { "name": "dotted.path" }` to keep a value for later steps, or `{ "kind": "activityAuthorize", "save": { "token": "token" } }` to reuse the plugin's own OAuth handshake (the account token never leaves Discord's hosts). Use `"auth": "none"` on any request sent to an activity host. `report.successPath` names the field the server answers with on success (`"ok"` by default) so a rejected progress call fails loudly instead of looking finished.
+Recipes also accept a `setup` array that runs before the progress loop. A setup step can be a plain request with `"save": { "name": "dotted.path" }` to keep a value for later steps, or `{ "kind": "activityAuthorize", "save": { "token": "token" } }` to reuse the plugin's own OAuth handshake (the account token never leaves Discord's hosts). A later step may use anything an earlier step saved, and an `activityAuthorize` step may carry the activity's own protocol with `"headers"` and `"body"` (placeholders filled in). Use `"auth": "none"` on any request sent to an activity host. `report.successPath` names the field the server answers with on success (`"ok"` by default) so a rejected progress call fails loudly instead of looking finished.
 
-#### Worked example: Arise activities (for example Audible's Exoplanet)
+An activity request has no cookies and no iframe, so the activity proxy ticket that the activity itself gets from its iframe URL is saved as `{proxyTicket}` (percent-encoded; the raw value is `{ticket}`) and repeated in the URL (`...?discord_proxy_ticket={proxyTicket}`) as well as in the `Referer`, which is `{referrer}`, the full iframe URL.
 
-Captured from the activity's own frontend: it authorizes, registers an Arise session, then reports `{ progress, quest_id }` and expects `{ "status": "ok" }`.
+#### Shipped recipe: Arise activities (for example Audible's Exoplanet)
+
+`builtinRecipes.js` ships one recipe, `arise-activity`, for the application `1557799582732124221`. It was read from the activity's own frontend: authorize, register an Arise session, then report `{ progress, quest_id }` and expect `{ "status": "ok" }`, on a five second throttle.
 
 ```json
 [
   {
     "id": "arise-activity",
-    "match": { "applicationId": "1557799582732124221", "taskTypes": ["ACHIEVEMENT_IN_ACTIVITY"], "eventName": "progress" },
+    "match": { "applicationId": "1557799582732124221", "taskTypes": ["ACHIEVEMENT_IN_ACTIVITY"] },
     "setup": [
-      { "kind": "activityAuthorize", "save": { "token": "token" } },
       {
-        "url": "https://{applicationId}.discordsays.com/.proxy/acf/arise/register",
-        "auth": "none",
+        "kind": "activityAuthorize",
         "headers": {
-          "X-Auth-Token": "{token}",
           "X-Universe-ID": "d5f3e8ae-12a3-4aa9-a0f0-25e1aa92416b",
           "X-Discord-Activity-Id": "{applicationId}",
-          "X-Discord-Hostname": "1557799582732124221.discordsays.com"
+          "X-Discord-Hostname": "{applicationId}.discordsays.com",
+          "X-Arise-Client": "astronaut-prod-main-46567f6"
+        },
+        "save": { "ariseUserToken": "token", "proxyTicket": "ticketQuery", "referrer": "referrer" }
+      },
+      {
+        "url": "https://{applicationId}.discordsays.com/.proxy/acf/arise/register?discord_proxy_ticket={proxyTicket}",
+        "auth": "none",
+        "headers": {
+          "X-Auth-Token": "{ariseUserToken}",
+          "X-Universe-ID": "d5f3e8ae-12a3-4aa9-a0f0-25e1aa92416b",
+          "X-Discord-Activity-Id": "{applicationId}",
+          "X-Discord-Hostname": "{applicationId}.discordsays.com",
+          "X-Arise-Client": "astronaut-prod-main-46567f6",
+          "Referer": "{referrer}"
         },
         "save": { "ariseToken": "authToken" }
       }
     ],
     "report": {
-      "url": "https://{applicationId}.discordsays.com/.proxy/acf/quest/progress",
+      "url": "https://{applicationId}.discordsays.com/.proxy/acf/quest/progress?discord_proxy_ticket={proxyTicket}",
       "auth": "none",
       "headers": {
         "X-Auth-Token": "{ariseToken}",
         "X-Universe-ID": "d5f3e8ae-12a3-4aa9-a0f0-25e1aa92416b",
         "X-Discord-Activity-Id": "{applicationId}",
-        "X-Discord-Hostname": "1557799582732124221.discordsays.com",
-        "X-Arise-Client": "astronaut-prod-main-46567f6"
+        "X-Discord-Hostname": "{applicationId}.discordsays.com",
+        "X-Arise-Client": "astronaut-prod-main-46567f6",
+        "Referer": "{referrer}"
       },
       "body": { "progress": "{value}", "quest_id": "{questId}" },
       "step": 1,
-      "intervalSeconds": 10,
-      "successPath": "status"
+      "intervalSeconds": 6,
+      "successPath": "status",
+      "successEquals": "ok"
     }
   }
 ]
 ```
 
-The activity throttles progress to one report every five seconds, so keep the interval above that.
+The activity throttles progress to one report every five seconds, so the interval stays above that.
+
+Keep only one recipe per quest. If a custom recipe for the same application is broken, turn **Use built-in recipes** back on and empty the custom textarea rather than debugging both at once.
 
 ### Dorion limitations
 
 - `PLAY_ON_DESKTOP` runs through Dorion's native HTTP client (`@tauri-apps/plugin-http`) instead of Discord's web transport. Discord rejects quest heartbeats whose user agent has no Electron version, so the plugin sends each heartbeat with a desktop user agent and a matching `X-Super-Properties` header. Only quest requests carry that identity; chat and everything else stay on the normal web session. This path has **not** been confirmed against Discord's servers, so treat a completed quest as the only proof: check that progress rises and survives a reload.
 - `STREAM_ON_DESKTOP` is opt-in and experimental. Discord validates that a real stream exists and that someone else is watching it, and only trusts the client about which application the stream belongs to. The plugin therefore waits for a stream you started yourself, then heartbeats with that stream's real key through the same native transport. It does not fake the stream or the viewer, and it has **not** been verified end to end.
-- Achievement processing is off by default in the Shelter port. Its requests need a `Referer` header, which Dorion 7.0.1's Tauri HTTP backend strips, so completion may fail. An achievement that fails is not retried until the plugin restarts.
+- Achievement processing is off by default in the Shelter port. It needs the activity's own OAuth handshake, and the activity proxy expects the session ticket in the request: Dorion 7.0.1's Tauri HTTP backend may drop the `Referer` header, so the ticket is also sent as a `discord_proxy_ticket` query parameter. When a handshake is refused the console now prints the HTTP status and the server's answer (with tokens and codes redacted) instead of a bare "failed". An achievement that fails is not retried until the plugin restarts.
 - Video, activity, automatic enrollment, achievement, auto-claim, desktop and stream heartbeat logic have automated tests with simulated Discord and Tauri responses. They have **not** been verified against a live Dorion session or Discord's servers.
 - Auto-claim is off by default and needs a solver API key. The key is stored unencrypted in Shelter's local plugin storage and sent to the selected solver. A failed claim can be completed manually.
 - Achievement attempts authorize an activity application. If cleanup is interrupted or ambiguous, check Discord's **Authorized Apps** settings. Even one newly found authorization cannot be conclusively tied to this plugin if another authorization for the same application is created concurrently.

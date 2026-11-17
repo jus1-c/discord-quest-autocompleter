@@ -6,10 +6,20 @@
 
 import { normalizeQuest } from "./quests.js";
 import { createAdapters } from "./adapters.js";
+import { BUILT_IN_RECIPES } from "./builtinRecipes.js";
 
 export function createEngine({ flux, http, settings, native, desktopTransport }) {
     const { dispatcher } = flux;
-    const adapters = createAdapters({ native, http, getRecipeText: () => settings.customAdapters });
+    const adapters = createAdapters({
+        native,
+        http,
+        getRecipeTexts: () => {
+            const sources = [];
+            if (settings.useBuiltInRecipes !== false) sources.push({ label: "built-in", text: BUILT_IN_RECIPES });
+            sources.push({ label: "custom", text: settings.customAdapters });
+            return sources;
+        }
+    });
     const supportedTasks = [
         "WATCH_VIDEO", "PLAY_ON_DESKTOP", "STREAM_ON_DESKTOP",
         "PLAY_ACTIVITY", "WATCH_VIDEO_ON_MOBILE", "ACHIEVEMENT_IN_ACTIVITY"
@@ -447,6 +457,7 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
     function adapterFor(quest, type) {
         return adapters.find(quest, {
             applicationId: firstApplicationId(quest),
+            applicationIds: questApplicationIds(quest),
             taskType: type ?? null,
             eventName: taskEventName(quest, type)
         });
@@ -457,19 +468,25 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
             log(`Skipped "${quest.config.messages?.questName}": achievement bypass is disabled`);
             return;
         }
+        const questName = quest.config.messages?.questName;
         const task = taskConfig(quest).tasks.ACHIEVEMENT_IN_ACTIVITY;
-        const applicationId = firstApplicationId(quest);
+        const applicationIds = questApplicationIds(quest);
+        const applicationId = task?.applications?.[0]?.id ?? firstApplicationId(quest);
+        // Printed before anything is attempted: when a quest is reported as unsupported the
+        // console still shows which applications the quest carries and which recipes loaded.
+        log(`Activity quest "${questName}": apps [${applicationIds.join(", ")}], ${adapters.describe()}`);
         if (!applicationId || !Number.isFinite(task?.target) || task.target <= 0) throw new Error("Invalid achievement quest");
         const adapter = adapterFor(quest, "ACHIEVEMENT_IN_ACTIVITY");
         if (!adapter) {
             reportUnsupported(quest, chooseTask(quest));
             return;
         }
-        log(`Activity protocol: ${adapter.id} for "${quest.config.messages?.questName}"`);
+        const resolvedApplicationId = adapter.applicationId ?? applicationId;
+        log(`Activity protocol: ${adapter.id} for "${questName}"`);
         await adapter.run({
             quest,
             task,
-            applicationId,
+            applicationId: resolvedApplicationId,
             taskType: "ACHIEVEMENT_IN_ACTIVITY",
             eventName: taskEventName(quest, "ACHIEVEMENT_IN_ACTIVITY"),
             isCurrent: () => myGeneration === generation,
@@ -641,6 +658,21 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
         return null;
     }
 
+    /** Every application id the quest mentions, in the order Discord lists them. */
+    function questApplicationIds(quest) {
+        const ids = [];
+        const add = id => {
+            const value = id == null ? "" : String(id);
+            if (value && !ids.includes(value)) ids.push(value);
+        };
+        add(quest.config?.application?.id);
+        for (const application of quest.config?.applications ?? []) add(application?.id);
+        for (const [, task] of taskEntries(quest)) {
+            for (const application of task.applications ?? []) add(application?.id);
+        }
+        return ids;
+    }
+
     /**
      * Redacted snapshot for reporting a quest the plugin cannot run. It never includes the
      * account token, cookies or request headers; only quest metadata and task shapes.
@@ -661,12 +693,14 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
             },
             transports: { native: Boolean(native), desktop: Boolean(desktopTransport) },
             adapters: adapters.ids,
+            recipes: adapters.describe(),
             quests: allQuests().map(quest => {
                 const choice = chooseTask(quest);
                 return {
                     id: quest.id,
                     name: quest.config?.messages?.questName ?? null,
                     applicationId: firstApplicationId(quest),
+                    applicationIds: questApplicationIds(quest),
                     configVersion: quest.config?.configVersion ?? null,
                     joinOperator: joinOperator(quest),
                     expiresAt: quest.config?.expiresAt ?? null,

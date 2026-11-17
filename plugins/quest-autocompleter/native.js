@@ -22,6 +22,14 @@ function checkActivity(appId, questId, referrer) {
     }
 }
 
+function activityUrl(appId, path, ticket) {
+    const url = new URL(`https://${appId}.discordsays.com${path}`);
+    // The activity proxy reads the session ticket from the iframe URL; a native request has no
+    // iframe and no cookies, so the ticket is repeated in the query as well as in the Referer.
+    if (ticket) url.searchParams.set("discord_proxy_ticket", ticket);
+    return url.toString();
+}
+
 function delay(ms, signal) {
     if (signal?.aborted) return Promise.reject(new Error("Cancelled"));
     return new Promise((resolve, reject) => {
@@ -70,31 +78,40 @@ export function createNative(nativeFetch) {
         });
     }
 
-    async function discordsaysAuthorize({ appId, questId, referrer, code, signal }) {
+    async function discordsaysAuthorize({ appId, questId, referrer, code, ticket, headers, body, userAgent, signal }) {
         checkActivity(appId, questId, referrer);
-        return request(`https://${appId}.discordsays.com/.proxy/acf/authorize`, {
+        if (typeof code !== "string" || !code) throw new Error("Invalid activity authorization code");
+        const identity = userAgent ? { "User-Agent": userAgent } : {};
+        return request(activityUrl(appId, "/.proxy/acf/authorize", ticket), {
             headers: {
                 "Content-Type": "application/json",
+                ...identity,
                 "X-Auth-Token": "",
                 "X-Discord-Quest-ID": questId,
-                Referer: referrer
+                Referer: referrer,
+                ...(headers ?? {})
             },
-            body: { code },
+            // The activity's own client sends both fields; several servers reject a body with
+            // only the code.
+            body: { activityId: appId, code, ...(body ?? {}) },
             signal
         });
     }
 
-    async function discordsaysProgress({ appId, questId, referrer, token, progress, signal }) {
+    async function discordsaysProgress({ appId, questId, referrer, ticket, token, progress, headers, body, userAgent, signal }) {
         checkActivity(appId, questId, referrer);
         if (!Number.isFinite(progress) || progress < 0) throw new Error("Invalid activity progress");
-        return request(`https://${appId}.discordsays.com/.proxy/acf/quest/progress`, {
+        const identity = userAgent ? { "User-Agent": userAgent } : {};
+        return request(activityUrl(appId, "/.proxy/acf/quest/progress", ticket), {
             headers: {
                 "Content-Type": "application/json",
+                ...identity,
                 "X-Auth-Token": token,
                 "X-Discord-Quest-ID": questId,
-                Referer: referrer
+                Referer: referrer,
+                ...(headers ?? {})
             },
-            body: { progress: Math.floor(progress) },
+            body: { progress: Math.floor(progress), ...(body ?? {}) },
             signal
         });
     }

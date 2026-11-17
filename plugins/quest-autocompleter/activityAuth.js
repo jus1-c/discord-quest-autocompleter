@@ -9,13 +9,30 @@
  */
 
 export function createActivityAuth({ native, http }) {
+    /** Keeps a rejected handshake explainable without ever printing a token or a code. */
+    function describeResponse(result) {
+        const status = Number.isInteger(result?.status) ? `status ${result.status}` : "no response";
+        const body = result?.body;
+        if (!body || typeof body !== "object") return status;
+        const safe = {};
+        for (const [key, value] of Object.entries(body)) {
+            safe[key] = /token|code|secret|authorization/i.test(key) ? "<redacted>" : value;
+        }
+        const text = JSON.stringify(safe);
+        return `${status}${text && text !== "{}" ? ` ${text.slice(0, 140)}` : ""}`;
+    }
+
     /**
-     * Returns `{ token, referrer, cleanup }`. `token` is null when the session changed under
-     * us; `cleanup` must still run so a freshly created grant is revoked.
+     * Returns `{ token, referrer, ticket, cleanup }`. `token` is null when the session changed
+     * under us; `cleanup` must still run so a freshly created grant is revoked.
+     *
+     * `headers` and `body` are the activity's own protocol details (a recipe supplies them):
+     * the endpoints live behind the activity proxy on the application's own host, and the
+     * application decides which headers and body fields its authorize call needs.
      */
-    async function grant({ applicationId, questId, isCurrent, signal, warn }) {
+    async function grant({ applicationId, questId, isCurrent, signal, warn, headers, body }) {
         const baselineResponse = await http.get({ url: "/oauth2/tokens" });
-        if (!isCurrent()) return { token: null, referrer: null, cleanup: async () => { } };
+        if (!isCurrent()) return { token: null, referrer: null, ticket: null, cleanup: async () => { } };
         if (!Array.isArray(baselineResponse.body)) throw new Error("Cannot determine existing OAuth grants");
         const before = new Set(baselineResponse.body.map(entry => entry.id));
         let authorizationRequested = false;
@@ -66,19 +83,41 @@ export function createActivityAuth({ native, http }) {
                 }
             });
             authorized = true;
-            if (!isCurrent()) return { token: null, referrer: null, cleanup };
+            if (!isCurrent()) return { token: null, referrer: null, ticket: null, cleanup };
             const code = auth.body?.location ? new URL(auth.body.location).searchParams.get("code") : null;
             if (!code) throw new Error("Activity authorization did not return a code");
-            const ticket = await http.post({ url: `/applications/${applicationId}/proxy-tickets`, body: {} });
-            if (!isCurrent()) return { token: null, referrer: null, cleanup };
-            if (!ticket.body?.ticket) throw new Error("Activity proxy ticket unavailable");
-            const referrer = `https://${applicationId}.discordsays.com/?instance_id=example-cl-instance&platform=desktop&discord_proxy_ticket=${ticket.body.ticket}`;
-            const authResult = await native.discordsaysAuthorize({
-                appId: applicationId, questId, referrer, code, signal
+            const ticketResponse = await http.post({
+                url: `/applications/${applicationId}/proxy-tickets`,
+                body: { use_stateless_ticket: true, surface: 0 }
             });
-            if (!isCurrent()) return { token: null, referrer, cleanup };
-            if (!authResult.ok || !authResult.body?.token) throw new Error("Activity authorization failed");
-            return { token: authResult.body.token, referrer, cleanup };
+            if (!isCurrent()) return { token: null, referrer: null, ticket: null, cleanup };
+            const ticket = ticketResponse.body?.ticket;
+            if (!ticket) throw new Error("Activity proxy ticket unavailable");
+            const referrer = `https://${applicationId}.discordsays.com/?instance_id=example-cl-instance&platform=desktop&discord_proxy_ticket=${ticket}`;
+            const authResult = await native.discordsaysAuthorize({
+                appId: applicationId,
+                questId,
+                referrer,
+                ticket,
+                code,
+                signal,
+                userAgent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
+                headers,
+                body
+            });
+            if (!isCurrent()) return { token: null, referrer, ticket, ticketQuery: null, cleanup };
+            if (!authResult.ok || !authResult.body?.token) {
+                throw new Error(`Activity authorization failed (${describeResponse(authResult)})`);
+            }
+            return {
+                token: authResult.body.token,
+                referrer,
+                ticket,
+                // The ticket is base64, so a recipe that repeats it in a query string needs it
+                // percent-encoded; the Referer keeps the same value the activity itself sends.
+                ticketQuery: encodeURIComponent(ticket),
+                cleanup
+            };
         } catch (error) {
             await cleanup();
             throw error;

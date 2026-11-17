@@ -1409,6 +1409,103 @@ test("a recipe can reuse the plugin's own activity authorization", async t => {
     }
 });
 
+test("the built-in Arise recipe drives an achievement quest end to end", async t => {
+    const { createEngine } = await loadEngine();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const gameQuest = multiTaskQuest("916", {
+        ACHIEVEMENT_IN_ACTIVITY: { target: 4, applications: [{ id: "1557799582732124221" }] }
+    });
+    gameQuest.config.application = { id: "1557799582732124221", name: "EXOPLANET" };
+    const env = runtime(async request => {
+        if (request.url === "/quests/@me") return { body: { quests: [gameQuest] } };
+        if (request.url === "/oauth2/tokens") return { body: [] };
+        return { body: {} };
+    });
+    env.options.http.post = async request => {
+        if (request.url === "/oauth2/authorize") return { body: { location: "https://astronaut.ariseworlds.com?code=abc&iss=x" } };
+        if (request.url.endsWith("/proxy-tickets")) return { body: { ticket: "ab+cd/ef==" } };
+        return { body: {} };
+    };
+    env.options.http.del = async () => ({ body: {} });
+    env.options.settings.achievementBypass = true;
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    const calls = [];
+    let authorized = null;
+    env.options.native = {
+        async discordsaysAuthorize(options) {
+            authorized = options;
+            return { ok: true, status: 200, body: { token: "activity-token" } };
+        },
+        async request(url, options) {
+            calls.push({ url, headers: options.headers, body: options.body });
+            if (url.includes("/arise/register")) return { ok: true, status: 200, body: { authToken: "arise-token" } };
+            return { ok: true, status: 200, body: { status: "ok" } };
+        }
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        for (let i = 0; i < 6; i++) {
+            t.mock.timers.tick(6000);
+            await nextTurn();
+        }
+        const report = engine.diagnostics().quests[0];
+        assert.equal(report.adapter, "recipe:arise-activity");
+        // The authorize call carries the activity's own protocol, with its placeholders filled in.
+        assert.equal(authorized.headers["X-Discord-Activity-Id"], "1557799582732124221");
+        assert.equal(authorized.headers["X-Discord-Hostname"], "1557799582732124221.discordsays.com");
+        assert.equal(authorized.headers["X-Arise-Client"], "astronaut-prod-main-46567f6");
+        assert.equal(authorized.ticket, "ab+cd/ef==");
+        assert.match(authorized.referrer, /discord_proxy_ticket=ab\+cd\/ef==$/);
+        // Registration upgrades the Arise user token to the token progress is reported with.
+        // The ticket is base64, so it has to be percent-encoded before it goes into a query.
+        assert.match(calls[0].url, /\.proxy\/acf\/arise\/register\?discord_proxy_ticket=ab%2Bcd%2Fef%3D%3D$/);
+        assert.equal(calls[0].headers["X-Auth-Token"], "activity-token");
+        assert.equal(calls[0].headers.Authorization, undefined);
+        assert.match(calls[1].url, /\.proxy\/acf\/quest\/progress\?discord_proxy_ticket=ab%2Bcd%2Fef%3D%3D$/);
+        assert.equal(calls[1].headers["X-Auth-Token"], "arise-token");
+        assert.deepEqual(calls.slice(1).map(call => call.body), [
+            { progress: 1, quest_id: "916" },
+            { progress: 2, quest_id: "916" },
+            { progress: 3, quest_id: "916" },
+            { progress: 4, quest_id: "916" }
+        ]);
+    } finally {
+        engine.stop();
+    }
+});
+
+test("turning off built-in recipes falls back to the built in adapter", async t => {
+    const { createEngine } = await loadEngine();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const gameQuest = multiTaskQuest("917", {
+        ACHIEVEMENT_IN_ACTIVITY: { target: 4, applications: [{ id: "1557799582732124221" }] }
+    });
+    gameQuest.config.application = { id: "1557799582732124221", name: "EXOPLANET" };
+    const env = runtime(async request => {
+        if (request.url === "/quests/@me") return { body: { quests: [gameQuest] } };
+        if (request.url === "/oauth2/tokens") return { body: [] };
+        return { body: {} };
+    });
+    env.options.settings.achievementBypass = true;
+    env.options.settings.useBuiltInRecipes = false;
+    env.options.http.post = async () => ({ body: {} });
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    env.options.native = {
+        async discordsaysAuthorize() { return { ok: false, status: 401, body: {} }; },
+        async discordsaysProgress() { return { ok: true, status: 200, body: {} }; }
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        assert.equal(engine.diagnostics().quests[0].adapter, "acf");
+    } finally {
+        engine.stop();
+    }
+});
+
 test("diagnostics show the live progress value of each task", async () => {
     const { createEngine } = await loadEngine();
     const quest = videoQuest("920");

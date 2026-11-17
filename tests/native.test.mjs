@@ -102,6 +102,41 @@ test("achievement requests reject a mismatched or insecure referrer", async () =
     assert.equal(calls, 0);
 });
 
+test("an activity authorize request carries the activity's own protocol", async () => {
+    const { createNative } = await loadNative();
+    const requests = [];
+    const native = createNative(async (url, options) => {
+        requests.push({ url, options });
+        return response({ token: "activity-token" });
+    });
+    const referrer = "https://123.discordsays.com/?discord_proxy_ticket=ticket-value";
+    const result = await native.discordsaysAuthorize({
+        appId: "123",
+        questId: "456",
+        referrer,
+        ticket: "ticket-value",
+        code: "oauth-code",
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/157.0.0.0 Safari/537.36",
+        headers: { "X-Arise-Client": "astronaut-prod-main-46567f6" }
+    });
+    assert.deepEqual(result.body, { token: "activity-token" });
+    assert.equal(requests.length, 1);
+    const [request] = requests;
+    const url = new URL(request.url);
+    assert.equal(url.host, "123.discordsays.com");
+    assert.equal(url.pathname, "/.proxy/acf/authorize");
+    assert.equal(url.searchParams.get("discord_proxy_ticket"), "ticket-value");
+    const headers = request.options.headers;
+    assert.equal(headers.Referer, referrer);
+    assert.equal(headers["X-Arise-Client"], "astronaut-prod-main-46567f6");
+    assert.match(headers["User-Agent"], /Chrome/);
+    assert.equal(headers.Authorization, undefined);
+    assert.deepEqual(JSON.parse(request.options.body), {
+        activityId: "123",
+        code: "oauth-code"
+    });
+});
+
 test("CapSolver polls the selected solver and returns the solved token", async t => {
     const { createNative } = await loadNative();
     t.mock.timers.enable({ apis: ["setTimeout"] });

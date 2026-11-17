@@ -37,6 +37,25 @@ function checkPlaceholders(text, where, allowed = PLACEHOLDERS) {
     }
 }
 
+function normalizeHeaders(raw, where, allowed) {
+    const headers = raw === undefined ? {} : raw;
+    if (!headers || typeof headers !== "object" || Array.isArray(headers)) throw new Error(`${where}.headers must be an object`);
+    for (const key of Object.keys(headers)) {
+        if (FORBIDDEN_HEADERS.includes(key.toLowerCase())) {
+            throw new Error(`${where}.headers cannot set ${key}; the plugin owns Authorization, Cookie and Host`);
+        }
+    }
+    checkPlaceholders(Object.values(headers).join(" "), `${where}.headers`, allowed);
+    return headers;
+}
+
+function normalizeBody(raw, where, allowed) {
+    if (raw === undefined) return undefined;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}.body must be an object`);
+    checkPlaceholders(JSON.stringify(raw), `${where}.body`, allowed);
+    return raw;
+}
+
 function normalizeRequest(raw, where, allowed) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where} must be an object`);
     if (typeof raw.url !== "string") throw new Error(`${where}.url must be a string`);
@@ -48,47 +67,46 @@ function normalizeRequest(raw, where, allowed) {
     const method = raw.method === undefined ? "POST" : String(raw.method).toUpperCase();
     if (!METHODS.includes(method)) throw new Error(`${where}.method must be POST, GET or DELETE`);
 
-    const headers = raw.headers === undefined ? {} : raw.headers;
-    if (!headers || typeof headers !== "object" || Array.isArray(headers)) throw new Error(`${where}.headers must be an object`);
-    for (const key of Object.keys(headers)) {
-        if (FORBIDDEN_HEADERS.includes(key.toLowerCase())) {
-            throw new Error(`${where}.headers cannot set ${key}; the plugin owns Authorization, Cookie and Host`);
-        }
-    }
-    checkPlaceholders(Object.values(headers).join(" "), `${where}.headers`, allowed);
+    return {
+        url: raw.url,
+        method,
+        headers: normalizeHeaders(raw.headers, where, allowed),
+        body: normalizeBody(raw.body, where, allowed),
+        auth: normalizeAuth(raw.auth, where)
+    };
+}
 
-    if (raw.body !== undefined) {
-        if (!raw.body || typeof raw.body !== "object") throw new Error(`${where}.body must be an object`);
-        checkPlaceholders(JSON.stringify(raw.body), `${where}.body`, allowed);
-    }
-
-    const auth = raw.auth === undefined ? "discord" : raw.auth;
+function normalizeAuth(raw, where) {
+    const auth = raw === undefined ? "discord" : raw;
     if (auth !== "discord" && auth !== "none") throw new Error(`${where}.auth must be "discord" or "none"`);
+    return auth;
+}
 
-    return { url: raw.url, method, headers, body: raw.body, auth };
+function normalizeSave(raw, where) {
+    if (raw === undefined) return {};
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}.save must be an object`);
+    for (const [name, path] of Object.entries(raw)) {
+        if (!/^[A-Za-z][A-Za-z0-9]{0,23}$/.test(name)) throw new Error(`${where}.save has an invalid name "${name}"`);
+        if (typeof path !== "string" || !path) throw new Error(`${where}.save.${name} must be a dotted path`);
+    }
+    return raw;
 }
 
 function normalizeSetupStep(raw, index, allowed) {
+    const where = `setup[${index}]`;
     if (raw && raw.kind !== undefined) {
-        if (!SETUP_KINDS.includes(raw.kind)) throw new Error(`setup[${index}].kind must be one of ${SETUP_KINDS.join(", ")}`);
-        const savedByKind = raw.save === undefined ? {} : raw.save;
-        if (!savedByKind || typeof savedByKind !== "object" || Object.keys(savedByKind).length === 0) {
-            throw new Error(`setup[${index}] kind "${raw.kind}" needs a save object`);
-        }
-        for (const [name, path] of Object.entries(savedByKind)) {
-            if (!/^[A-Za-z][A-Za-z0-9]{0,23}$/.test(name)) throw new Error(`setup[${index}].save has an invalid name "${name}"`);
-            if (typeof path !== "string" || !path) throw new Error(`setup[${index}].save.${name} must be a dotted path`);
-        }
-        return { kind: raw.kind, save: savedByKind };
+        if (!SETUP_KINDS.includes(raw.kind)) throw new Error(`${where}.kind must be one of ${SETUP_KINDS.join(", ")}`);
+        const save = normalizeSave(raw.save, where);
+        if (Object.keys(save).length === 0) throw new Error(`${where} kind "${raw.kind}" needs a save object`);
+        return {
+            kind: raw.kind,
+            save,
+            headers: normalizeHeaders(raw.headers, where, allowed),
+            body: normalizeBody(raw.body, where, allowed)
+        };
     }
-    const step = normalizeRequest(raw, `setup[${index}]`, allowed);
-    const save = raw.save === undefined ? {} : raw.save;
-    if (!save || typeof save !== "object" || Array.isArray(save)) throw new Error(`setup[${index}].save must be an object`);
-    for (const [name, path] of Object.entries(save)) {
-        if (!/^[A-Za-z][A-Za-z0-9]{0,23}$/.test(name)) throw new Error(`setup[${index}].save has an invalid name "${name}"`);
-        if (typeof path !== "string" || !path) throw new Error(`setup[${index}].save.${name} must be a dotted path`);
-    }
-    return { ...step, save };
+    const step = normalizeRequest(raw, where, allowed);
+    return { ...step, save: normalizeSave(raw.save, where) };
 }
 
 function normalizeRecipe(raw, index) {
@@ -114,8 +132,15 @@ function normalizeRecipe(raw, index) {
     const setupRaw = raw.setup === undefined ? [] : raw.setup;
     if (!Array.isArray(setupRaw)) throw new Error(`recipe "${raw.id}" setup must be an array`);
     if (setupRaw.length > MAX_SETUP_STEPS) throw new Error(`recipe "${raw.id}" allows at most ${MAX_SETUP_STEPS} setup steps`);
-    const setup = setupRaw.map((step, stepIndex) => normalizeSetupStep(step, stepIndex, PLACEHOLDERS));
-    const captures = setup.flatMap(step => Object.keys(step.save));
+    const setup = [];
+    const captures = [];
+    setupRaw.forEach((stepRaw, stepIndex) => {
+        // Each step may use what the earlier ones captured, so the ticket from the activity
+        // authorization can be handed to the requests that follow it.
+        const step = normalizeSetupStep(stepRaw, stepIndex, [...PLACEHOLDERS, ...captures]);
+        setup.push(step);
+        for (const name of Object.keys(step.save)) if (!captures.includes(name)) captures.push(name);
+    });
     const allowed = [...PLACEHOLDERS, ...captures];
 
     if (!raw.report || typeof raw.report !== "object") throw new Error(`recipe "${raw.id}" needs a report object`);
@@ -222,9 +247,24 @@ function savedValue(response, path) {
     return undefined;
 }
 
+/**
+ * A quest can carry more than one application id: the one Discord shows in its config and the
+ * ones listed on the task itself. The activity handshake needs the task application, so a
+ * recipe matches when any of them is listed instead of only the first one.
+ */
+function applicationCandidates(context) {
+    const list = Array.isArray(context?.applicationIds) && context.applicationIds.length
+        ? context.applicationIds
+        : [context?.applicationId];
+    return list.map(id => String(id ?? ""));
+}
+
 function matches(recipe, quest, context) {
-    const { applicationId, taskType, eventName } = context;
-    if (recipe.match.applicationId.length && !recipe.match.applicationId.includes(String(applicationId ?? ""))) return false;
+    const { taskType, eventName } = context;
+    if (recipe.match.applicationId.length) {
+        const candidates = applicationCandidates(context);
+        if (!recipe.match.applicationId.some(id => candidates.includes(id))) return false;
+    }
     if (recipe.match.questId.length && !recipe.match.questId.includes(String(quest.id))) return false;
     if (recipe.match.taskType.length && !recipe.match.taskType.includes(String(taskType ?? ""))) return false;
     if (recipe.match.eventName.length && !recipe.match.eventName.includes(String(eventName ?? ""))) return false;
@@ -236,6 +276,12 @@ export function createRecipeAdapter(recipe, { native, grantActivity }) {
         id: `recipe:${recipe.id}`,
         matchesQuest(quest, context) {
             return matches(recipe, quest, context);
+        },
+        /** The application id the recipe was written for, when it named one. */
+        applicationIdFor(context) {
+            if (!recipe.match.applicationId.length) return null;
+            const candidates = applicationCandidates(context);
+            return recipe.match.applicationId.find(id => candidates.includes(id)) ?? null;
         },
         async run({ quest, task, applicationId, taskType, eventName, isCurrent, signal, log, warn, getToken, sleep }) {
             if (typeof native?.request !== "function") throw new Error("Dorion native HTTP is unavailable");
@@ -282,7 +328,13 @@ export function createRecipeAdapter(recipe, { native, grantActivity }) {
                 if (setupStep.kind === "activityAuthorize") {
                     if (typeof grantActivity !== "function") throw new Error("Activity authorization is unavailable in recipes here");
                     const authorization = await grantActivity({
-                        applicationId, questId: quest.id, isCurrent, signal, warn
+                        applicationId,
+                        questId: quest.id,
+                        isCurrent,
+                        signal,
+                        warn,
+                        headers: substitute(setupStep.headers, values()),
+                        body: substitute(setupStep.body, values())
                     });
                     cleanups.push(authorization.cleanup);
                     for (const [name, path] of Object.entries(setupStep.save)) {
