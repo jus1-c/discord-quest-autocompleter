@@ -42,9 +42,11 @@ export function normalizeQuest(raw) {
     const messages = config.messages && typeof config.messages === "object" ? config.messages : {};
     const application = config.application && typeof config.application === "object" ? config.application : undefined;
 
+    const taskConfig = pick(config, "taskConfig", "taskConfigV2", "task_config_v2", "task_config");
     const normalizedConfig = {
         ...config,
-        taskConfig: normalizeTasks(pick(config, "taskConfig", "taskConfigV2", "task_config_v2", "task_config")),
+        taskConfig: normalizeTasks(taskConfig),
+        joinOperator: pick(taskConfig, "joinOperator", "join_operator") ?? "or",
         expiresAt: pick(config, "expiresAt", "expires_at") ?? null,
         configVersion: pick(config, "configVersion", "config_version") ?? 1,
         messages: { ...messages, questName: pick(messages, "questName", "quest_name") ?? "" },

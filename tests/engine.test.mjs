@@ -897,7 +897,8 @@ test("a failed achievement is not reauthorized on every quest update", async t =
         return { body: { ticket: "ticket" } };
     };
     env.options.native = {
-        async discordsaysAuthorize() { return { ok: false, body: {} }; }
+        async discordsaysAuthorize() { return { ok: false, body: {} }; },
+        async discordsaysProgress() { return { ok: true, body: {} }; }
     };
     const engine = createEngine(env.options);
     const originalWarn = console.warn;
@@ -952,5 +953,165 @@ test("interruption during authorization cleanup warns without revoking on the ne
     } finally {
         engine.stop();
         console.warn = originalWarn;
+    }
+});
+
+function multiTaskQuest(id, tasks, { joinOperator = "or", enrolled = true } = {}) {
+    return {
+        id,
+        config: {
+            configVersion: 2,
+            expiresAt: "2999-01-01T00:00:00.000Z",
+            messages: { questName: `Quest ${id}` },
+            application: { id: "999", name: "Game" },
+            taskConfig: { joinOperator, tasks }
+        },
+        userStatus: enrolled ? { enrolledAt: "2020-01-01T00:00:00.000Z", progress: {} } : null
+    };
+}
+
+test("a quest that offers several platforms runs the desktop task", async () => {
+    const { createEngine } = await loadEngine();
+    const quest = multiTaskQuest("801", {
+        PLAY_ACTIVITY: { target: 20 },
+        PLAY_ON_DESKTOP: { target: 90 }
+    });
+    const env = runtime(async request => {
+        if (request.url === "/quests/@me") return { body: { quests: [quest] } };
+        return { body: [{ name: "Game", executables: [{ os: "win32", name: "game.exe" }] }] };
+    });
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    env.options.flux.stores.ChannelStore = { getSortedPrivateChannels: () => [{ id: "1234" }] };
+    const heartbeats = [];
+    const posts = [];
+    env.options.desktopTransport = {
+        async sendHeartbeat(args) {
+            heartbeats.push(args);
+            return { ok: true, status: 200, body: { progress: { PLAY_ON_DESKTOP: { value: 90 } } } };
+        }
+    };
+    env.options.http.post = async request => { posts.push(request); return { body: { progress: { PLAY_ACTIVITY: { value: 20 } } } }; };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        assert.equal(heartbeats.length, 2);
+        assert.deepEqual(posts, []);
+    } finally {
+        engine.stop();
+    }
+});
+
+test("the quest's own task order is used when the platform preference is off", async () => {
+    const { createEngine } = await loadEngine();
+    const quest = multiTaskQuest("802", {
+        PLAY_ACTIVITY: { target: 20 },
+        PLAY_ON_DESKTOP: { target: 90 }
+    });
+    const env = runtime(async () => ({ body: { quests: [quest] } }));
+    env.options.settings.preferDesktopPlatform = false;
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    env.options.flux.stores.ChannelStore = { getSortedPrivateChannels: () => [{ id: "1234" }] };
+    const heartbeats = [];
+    const posts = [];
+    env.options.desktopTransport = {
+        async sendHeartbeat(args) {
+            heartbeats.push(args);
+            return { ok: true, status: 200, body: {} };
+        }
+    };
+    env.options.http.post = async request => {
+        posts.push(request);
+        return { body: { progress: { PLAY_ACTIVITY: { value: 20 } } } };
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        assert.deepEqual(heartbeats, []);
+        assert.deepEqual(posts.map(request => request.url), [
+            "/quests/802/heartbeat",
+            "/quests/802/heartbeat"
+        ]);
+    } finally {
+        engine.stop();
+    }
+});
+
+test("a quest that requires every task is reported instead of half finished", async () => {
+    const { createEngine } = await loadEngine();
+    const quest = multiTaskQuest("803", {
+        PLAY_ON_DESKTOP: { target: 90 },
+        WATCH_VIDEO: { target: 60 }
+    }, { joinOperator: "and" });
+    const env = runtime(async () => ({ body: { quests: [quest] } }));
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    const heartbeats = [];
+    const posts = [];
+    env.options.desktopTransport = {
+        async sendHeartbeat(args) {
+            heartbeats.push(args);
+            return { ok: true, status: 200, body: {} };
+        }
+    };
+    env.options.http.post = async request => { posts.push(request); return { body: {} }; };
+    const engine = createEngine(env.options);
+    const originalWarn = console.warn;
+    const warnings = [];
+    console.warn = (...args) => warnings.push(args.join(" "));
+    try {
+        await engine.start();
+        await nextTurn();
+        assert.deepEqual(heartbeats, []);
+        assert.deepEqual(posts, []);
+        assert.match(warnings.join(" "), /every task/);
+    } finally {
+        engine.stop();
+        console.warn = originalWarn;
+    }
+});
+
+test("a console only quest is reported and does not block other quests", async () => {
+    const { createEngine } = await loadEngine();
+    const consoleOnly = multiTaskQuest("804", { PLAY_ON_XBOX: { target: 900 } });
+    const env = runtime(async () => ({ body: { quests: [consoleOnly, videoQuest("102")] } }));
+    const posts = [];
+    env.options.http.post = async request => {
+        posts.push(request);
+        return { body: { completed_at: "2026-11-16T00:00:00.000Z" } };
+    };
+    const engine = createEngine(env.options);
+    const originalWarn = console.warn;
+    const warnings = [];
+    console.warn = (...args) => warnings.push(args.join(" "));
+    try {
+        await engine.start();
+        await nextTurn();
+        assert.deepEqual(posts.map(request => request.url), ["/quests/102/video-progress"]);
+        assert.match(warnings.join(" "), /PLAY_ON_XBOX/);
+    } finally {
+        engine.stop();
+        console.warn = originalWarn;
+    }
+});
+
+test("diagnostics describe quests without leaking the account token", async () => {
+    const { createEngine } = await loadEngine();
+    const env = runtime(async () => ({ body: { quests: [videoQuest("901")] } }));
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    env.options.http.post = async () => ({ body: {} });
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        const report = engine.diagnostics();
+        const text = JSON.stringify(report);
+        assert.match(text, /901/);
+        assert.match(text, /WATCH_VIDEO/);
+        assert.doesNotMatch(text, /discord-test-token/);
+        assert.equal(report.quests[0].chosenTask, "WATCH_VIDEO");
+        assert.equal(report.quests[0].enrolled, true);
+    } finally {
+        engine.stop();
     }
 });

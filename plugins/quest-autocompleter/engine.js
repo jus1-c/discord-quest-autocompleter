@@ -5,13 +5,16 @@
  */
 
 import { normalizeQuest } from "./quests.js";
+import { createAdapters } from "./adapters.js";
 
 export function createEngine({ flux, http, settings, native, desktopTransport }) {
     const { dispatcher } = flux;
+    const adapters = createAdapters({ native, http });
     const supportedTasks = [
         "WATCH_VIDEO", "PLAY_ON_DESKTOP", "STREAM_ON_DESKTOP",
         "PLAY_ACTIVITY", "WATCH_VIDEO_ON_MOBILE", "ACHIEVEMENT_IN_ACTIVITY"
     ];
+    const desktopTasks = ["PLAY_ON_DESKTOP", "STREAM_ON_DESKTOP"];
     let generation = 0;
     let pollInterval;
     let fetchInterval;
@@ -27,6 +30,7 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
     const claimFailed = new Set();
     const claimed = new Set();
     const enrolledIds = new Set();
+    const reportedUnsupported = new Set();
     const achievementFailed = new Set();
 
     function log(...args) {
@@ -62,6 +66,7 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
         claimFailed.clear();
         claimed.clear();
         enrolledIds.clear();
+        reportedUnsupported.clear();
         achievementFailed.clear();
     }
 
@@ -113,14 +118,58 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
         return quest.config?.taskConfig ?? quest.config?.taskConfigV2;
     }
 
-    function taskType(quest) {
-        const tasks = taskConfig(quest)?.tasks;
-        return supportedTasks.find(type => Number.isFinite(tasks?.[type]?.target) && tasks[type].target > 0);
+    function taskEntries(quest) {
+        const tasks = taskConfig(quest)?.tasks ?? {};
+        return Object.entries(tasks)
+            .filter(([, task]) => Number.isFinite(task?.target) && task.target > 0);
+    }
+
+    function joinOperator(quest) {
+        const value = taskConfig(quest)?.joinOperator ?? taskConfig(quest)?.join_operator;
+        return value === "and" ? "and" : "or";
+    }
+
+    /**
+     * Picks the task to run. A quest may offer several platforms; the user's preference
+     * decides whether the desktop one wins or the order the quest itself lists them.
+     */
+    function chooseTask(quest) {
+        const entries = taskEntries(quest);
+        if (!entries.length) return { reason: "no-task", types: [] };
+        const types = entries.map(([type]) => type);
+        const supported = entries.filter(([type]) => supportedTasks.includes(type));
+        if (!supported.length) return { reason: "unsupported-types", types };
+        if (joinOperator(quest) === "and" && supported.length > 1){
+            return { reason: "join-and", types };
+        }
+        const allowed = supported.filter(([type]) => isTaskAllowed(type));
+        if (!allowed.length) return { reason: "disabled", types };
+        const preferred = settings.preferDesktopPlatform !== false;
+        const ordered = preferred
+            ? [...allowed].sort((a, b) => taskRank(a[0]) - taskRank(b[0]))
+            : allowed;
+        return { type: ordered[0][0], reason: "ok", types };
+    }
+
+    function taskRank(type) {
+        const desktop = desktopTasks.indexOf(type);
+        if (desktop >= 0) return desktop;
+        return desktopTasks.length + supportedTasks.indexOf(type);
+    }
+
+    function reportUnsupported(quest, choice) {
+        if (choice.reason === "disabled" || choice.reason === "no-task") return;
+        if (reportedUnsupported.has(quest.id)) return;
+        reportedUnsupported.add(quest.id);
+        const detail = choice.reason === "join-and"
+            ? "needs every task (join_operator and)"
+            : `only offers ${choice.types.join(", ")}`;
+        console.warn(`[QuestAutocompleter] "${quest.config?.messages?.questName ?? quest.id}" ${detail}; copy the diagnostics from settings to request support.`);
     }
 
     function isCompletable(quest) {
         if (!(new Date(quest.config?.expiresAt).getTime() > Date.now())) return false;
-        return taskType(quest) !== undefined;
+        return taskEntries(quest).some(([type]) => supportedTasks.includes(type));
     }
 
     function isEnabled() {
@@ -395,83 +444,25 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
             log(`Skipped "${quest.config.messages?.questName}": achievement bypass is disabled`);
             return;
         }
-        if (!native) throw new Error("Dorion native HTTP is unavailable");
+        const adapter = adapters.find(quest);
+        if (!adapter) {
+            reportUnsupported(quest, chooseTask(quest));
+            return;
+        }
         const task = taskConfig(quest).tasks.ACHIEVEMENT_IN_ACTIVITY;
         const applicationId = quest.config.application?.id ?? task.applications?.[0]?.id;
-        if (!applicationId || !Number.isFinite(task.target) || task.target <= 0) throw new Error("Invalid achievement quest");
-
-        const baselineResponse = await http.get({ url: "/oauth2/tokens" });
-        if (myGeneration !== generation) return;
-        if (!Array.isArray(baselineResponse.body)) throw new Error("Cannot determine existing OAuth grants");
-        const before = new Set(baselineResponse.body.map(grant => grant.id));
-        const signal = sessionController?.signal;
-        let authorizationRequested = false;
-        let authorized = false;
-        try {
-            authorizationRequested = true;
-            const auth = await http.post({
-                url: "/oauth2/authorize",
-                query: {
-                    response_type: "code",
-                    client_id: applicationId,
-                    scope: "identify applications.commands applications.entitlements"
-                },
-                body: {
-                    permissions: "0",
-                    authorize: true,
-                    integration_type: 1,
-                    location_context: { guild_id: "10000", channel_id: "10000", channel_type: 10000 }
-                }
-            });
-            authorized = true;
-            if (myGeneration !== generation) return;
-            const code = auth.body?.location ? new URL(auth.body.location).searchParams.get("code") : null;
-            if (!code) throw new Error("Activity authorization did not return a code");
-            const ticket = await http.post({ url: `/applications/${applicationId}/proxy-tickets`, body: {} });
-            if (myGeneration !== generation) return;
-            if (!ticket.body?.ticket) throw new Error("Activity proxy ticket unavailable");
-            const referrer = `https://${applicationId}.discordsays.com/?instance_id=example-cl-instance&platform=desktop&discord_proxy_ticket=${ticket.body.ticket}`;
-            const authResult = await native.discordsaysAuthorize({
-                appId: applicationId, questId: quest.id, referrer, code, signal
-            });
-            if (myGeneration !== generation) return;
-            if (!authResult.ok || !authResult.body?.token) throw new Error("Activity authorization failed");
-            let done = 0;
-            while (done < task.target && myGeneration === generation) {
-                done = Math.min(task.target, done + Math.floor(Math.random() * 20) + 30);
-                const progress = await native.discordsaysProgress({
-                    appId: applicationId, questId: quest.id, referrer,
-                    token: authResult.body.token, progress: done, signal
-                });
-                if (myGeneration !== generation) return;
-                if (!progress.ok) throw new Error("Activity progress failed");
-                log(`[${quest.config.messages?.questName}] Progress: ${done}/${task.target}`);
-                if (done < task.target) await sleep(Math.floor(Math.random() * 4000) + 18_000);
-            }
-        } finally {
-            if (myGeneration === generation && authorized) {
-                try {
-                    const after = await http.get({ url: "/oauth2/tokens" });
-                    if (myGeneration !== generation) {
-                        console.warn("[QuestAutocompleter] Achievement interrupted; check Discord Authorized Apps.");
-                        return;
-                    }
-                    if (!Array.isArray(after.body)) throw new Error("Invalid OAuth grants response");
-                    const newGrants = after.body.filter(grant =>
-                        !before.has(grant.id) && grant.application?.id === applicationId
-                    );
-                    if (newGrants.length === 1) {
-                        await http.del({ url: `/oauth2/tokens/${newGrants[0].id}` });
-                    } else if (newGrants.length > 1) {
-                        console.warn("[QuestAutocompleter] Multiple new activity authorizations found; check Discord Authorized Apps.");
-                    }
-                } catch {
-                    console.warn("[QuestAutocompleter] Could not remove the activity authorization; check Discord Authorized Apps.");
-                }
-            } else if (authorizationRequested) {
-                console.warn("[QuestAutocompleter] Achievement interrupted; check Discord Authorized Apps.");
-            }
-        }
+        if (!applicationId || !Number.isFinite(task?.target) || task.target <= 0) throw new Error("Invalid achievement quest");
+        log(`Activity protocol: ${adapter.id} for "${quest.config.messages?.questName}"`);
+        await adapter.run({
+            quest,
+            task,
+            applicationId,
+            isCurrent: () => myGeneration === generation,
+            signal: sessionController?.signal,
+            log,
+            warn: message => console.warn(`[QuestAutocompleter] ${message}`),
+            sleep
+        });
     }
 
     async function processQueue(myGeneration) {
@@ -481,13 +472,15 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
             while (myGeneration === generation && isEnabled() && queue.length) {
                 const queued = queue.shift();
                 const quest = getQuest(queued.id);
-                if (!quest || quest.userStatus?.completedAt || !quest.userStatus?.enrolledAt || !isCompletable(quest)) continue;
-                activeQuestId = quest.id;
-                const type = taskType(quest);
-                if (!isTaskAllowed(type)) {
-                    activeQuestId = null;
+                if (!quest || quest.userStatus?.completedAt || !quest.userStatus?.enrolledAt) continue;
+                if (!(new Date(quest.config?.expiresAt).getTime() > Date.now())) continue;
+                const choice = chooseTask(quest);
+                if (!choice.type) {
+                    reportUnsupported(quest, choice);
                     continue;
                 }
+                activeQuestId = quest.id;
+                const type = choice.type;
                 if (type === "ACHIEVEMENT_IN_ACTIVITY" && achievementFailed.has(quest.id)) {
                     activeQuestId = null;
                     continue;
@@ -589,8 +582,12 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
             if (enrolledAny) await sleep(1500);
             if (myGeneration !== generation) return;
             for (const quest of allQuests()) {
-                if (!quest.userStatus?.enrolledAt || quest.userStatus?.completedAt || !isCompletable(quest)) continue;
-                if (!isTaskAllowed(taskType(quest))) continue;
+                if (!quest.userStatus?.enrolledAt || quest.userStatus?.completedAt) continue;
+                const choice = chooseTask(quest);
+                if (!choice.type) {
+                    reportUnsupported(quest, choice);
+                    continue;
+                }
                 if (quest.id !== activeQuestId && !queue.some(queued => queued.id === quest.id)) queue.push(quest);
             }
             void processQueue(myGeneration);
@@ -618,6 +615,51 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
         }
     }
 
+    /**
+     * Redacted snapshot for reporting a quest the plugin cannot run. It never includes the
+     * account token, cookies or request headers; only quest metadata and task shapes.
+     */
+    function diagnostics() {
+        return {
+            generatedAt: new Date().toISOString(),
+            settings: {
+                enabled: isEnabled(),
+                preferDesktopPlatform: settings.preferDesktopPlatform !== false,
+                autoAcceptQuests: Boolean(settings.autoAcceptQuests),
+                autoClaim: Boolean(settings.autoClaim),
+                achievementBypass: Boolean(settings.achievementBypass),
+                allowWatchVideo: settings.allowWatchVideo !== false,
+                allowPlayDesktop: settings.allowPlayDesktop !== false,
+                allowPlayActivity: settings.allowPlayActivity !== false,
+                allowStreamDesktop: settings.allowStreamDesktop === true
+            },
+            transports: { native: Boolean(native), desktop: Boolean(desktopTransport) },
+            adapters: adapters.ids,
+            quests: allQuests().map(quest => {
+                const choice = chooseTask(quest);
+                return {
+                    id: quest.id,
+                    name: quest.config?.messages?.questName ?? null,
+                    applicationId: quest.config?.application?.id ?? null,
+                    configVersion: quest.config?.configVersion ?? null,
+                    joinOperator: joinOperator(quest),
+                    expiresAt: quest.config?.expiresAt ?? null,
+                    enrolled: Boolean(quest.userStatus?.enrolledAt),
+                    completedAt: quest.userStatus?.completedAt ?? null,
+                    claimedAt: quest.userStatus?.claimedAt ?? null,
+                    tasks: taskEntries(quest).map(([type, task]) => ({
+                        type,
+                        target: task.target,
+                        eventName: task.event_name ?? task.eventName ?? null
+                    })),
+                    chosenTask: choice.type ?? null,
+                    unsupportedReason: choice.type ? null : choice.reason,
+                    adapter: adapters.find(quest)?.id ?? null
+                };
+            })
+        };
+    }
+
     async function start() {
         stop();
         const myGeneration = generation;
@@ -643,5 +685,5 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
         await fetchNewQuests(myGeneration);
     }
 
-    return { start, stop };
+    return { start, stop, diagnostics };
 }

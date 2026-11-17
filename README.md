@@ -62,9 +62,18 @@ Open the gear icon on the plugin card in **Shelter → Plugins**.
 
 - **Enable automated quests** — master switch. Turning it off stops the running task, the queue and every new request.
 - **Accept new quests automatically** — off by default. With it off the plugin only works on quests you accepted yourself.
+- **Prefer the desktop task** — on by default. A quest can offer several platforms (for example desktop, Xbox and PlayStation at once); with this on the plugin runs the desktop task instead of the first one the quest lists. It never changes the platform your reward is redeemable on.
 - **Quest families** — video, play desktop and activity are on; stream desktop and achievement are off because both are experimental.
 - **Claim rewards automatically** — off by default, plus the CAPTCHA solver and its API key.
-- **Advanced** — quest refresh interval, desktop heartbeat interval, desktop user agent override and console logging.
+- **Advanced** — quest refresh interval, desktop heartbeat interval, desktop user agent override, console logging and **Copy diagnostics**.
+
+### Quests the plugin cannot run
+
+Console-only quests (`PLAY_ON_XBOX`, `PLAY_ON_PLAYSTATION`), quests whose tasks are joined with `"join_operator": "and"`, and activities whose protocol has no adapter are reported once in the console with the task types they offer, and skipped without blocking the rest of the queue.
+
+**Copy diagnostics** (Advanced) prints and copies a redacted snapshot: quest and application IDs, task types and targets, join operator, progress timestamps and which adapter matched. It contains no token, cookie or request header. Paste it when asking for support.
+
+Application-tracked quests live in `adapters.js`. Each protocol is one adapter with a `matches` probe; adding support for a new activity means adding an adapter, not editing the engine.
 
 ### Dorion limitations
 

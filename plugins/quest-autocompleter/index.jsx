@@ -35,10 +35,11 @@ import { createNative } from "./native.js";
 import { createDesktopIdentity, createDesktopTransport } from "./desktop.js";
 
 const { store } = shelter.plugin;
-const { SwitchItem, Select, SelectOption } = shelter.ui;
+const { SwitchItem, Select, SelectOption, Button } = shelter.ui;
 
 store.enabled ??= true;
 store.autoAcceptQuests ??= false;
+store.preferDesktopPlatform ??= true;
 store.allowWatchVideo ??= true;
 store.allowPlayDesktop ??= true;
 store.allowPlayActivity ??= true;
@@ -102,6 +103,19 @@ function startEngine() {
     });
 }
 
+function copyDiagnostics() {
+    let data;
+    try {
+        data = JSON.stringify(engine.diagnostics(), null, 2);
+    } catch {
+        return;
+    }
+    console.log("[QuestAutocompleter] diagnostics:\n" + data);
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(data).catch(() => { });
+    }
+}
+
 export function onLoad() {
     applyStyles();
     if (!store.enabled) return;
@@ -136,6 +150,13 @@ export function settings() {
                 onChange={value => { store.autoAcceptQuests = value; }}
             >
                 Accept new quests automatically
+            </SwitchItem>
+            <SwitchItem
+                checked={store.preferDesktopPlatform}
+                note="When a quest offers several platforms, run the desktop task instead of the first one it lists."
+                onChange={value => { store.preferDesktopPlatform = value; }}
+            >
+                Prefer the desktop task
             </SwitchItem>
             <SwitchItem
                 checked={store.allowWatchVideo}
@@ -261,6 +282,10 @@ export function settings() {
                 >
                     Log progress to the console
                 </SwitchItem>
+                <div class="qac-field">
+                    <Button onClick={copyDiagnostics}>Copy diagnostics</Button>
+                    <p class="qac-note">Quest names, task types and reasons for quests this plugin cannot run. Printed to the console and copied to the clipboard; it never contains your token.</p>
+                </div>
             </details>
         </div>
     );
