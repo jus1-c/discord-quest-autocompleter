@@ -33,6 +33,7 @@ import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { createEngine } from "./engine.js";
 import { createNative } from "./native.js";
 import { createDesktopIdentity, createDesktopTransport } from "./desktop.js";
+import { describeRecipes } from "./recipes.js";
 
 const { store } = shelter.plugin;
 const { SwitchItem, Select, SelectOption, Button } = shelter.ui;
@@ -50,6 +51,7 @@ store.logProgress ??= true;
 store.fetchIntervalMinutes ??= 120;
 store.desktopHeartbeatSeconds ??= 60;
 store.desktopUserAgent ??= "";
+store.customAdapters ??= "";
 store.captchaService ??= "nopecha";
 store.captchaApiKey ??= "";
 
@@ -67,6 +69,7 @@ const styles = `
 .qac-input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
 .qac-input[type="number"]::-webkit-outer-spin-button, .qac-input[type="number"]::-webkit-inner-spin-button { appearance: none; -webkit-appearance: none; margin: 0; }
 .qac-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-muted, #b5bac1); }
+.qac-code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; line-height: 1.5; min-height: 96px; resize: vertical; }
 .qac-actions { display: flex; }
 .qac-actions > * { flex: 1 1 auto; min-width: 0; white-space: nowrap; }
 .qac-advanced { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--background-modifier-accent, rgba(255, 255, 255, 0.06)); }
@@ -284,6 +287,20 @@ export function settings() {
                 >
                     Log progress to the console
                 </SwitchItem>
+                <div class="qac-field">
+                    <label class="qac-label" for="qac-recipes">Custom adapters (JSON)</label>
+                    <textarea
+                        id="qac-recipes"
+                        class="qac-input qac-code"
+                        rows="6"
+                        spellcheck="false"
+                        placeholder={'[{"id":"demo","match":{"applicationId":"123"},"report":{"url":"https://discord.com/api/v9/quests/{questId}/heartbeat","body":{"value":"{value}"}}}]'}
+                        value={store.customAdapters}
+                        onInput={event => { store.customAdapters = event.currentTarget.value; }}
+                    />
+                    <p class="qac-note">{describeRecipes(store.customAdapters)}</p>
+                    <p class="qac-note">A recipe only reaches discord.com and {`{applicationId}`}.discordsays.com and cannot set your Authorization header. Recipes run before the built in adapters; leave this empty to use them alone.</p>
+                </div>
                 <div class="qac-field">
                     <div class="qac-actions">
                         <Button grow onClick={copyDiagnostics}>Copy diagnostics</Button>

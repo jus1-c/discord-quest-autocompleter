@@ -9,7 +9,7 @@ import { createAdapters } from "./adapters.js";
 
 export function createEngine({ flux, http, settings, native, desktopTransport }) {
     const { dispatcher } = flux;
-    const adapters = createAdapters({ native, http });
+    const adapters = createAdapters({ native, http, getRecipeText: () => settings.customAdapters });
     const supportedTasks = [
         "WATCH_VIDEO", "PLAY_ON_DESKTOP", "STREAM_ON_DESKTOP",
         "PLAY_ACTIVITY", "WATCH_VIDEO_ON_MOBILE", "ACHIEVEMENT_IN_ACTIVITY"
@@ -439,27 +439,43 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
         }
     }
 
+    function taskEventName(quest, type) {
+        const task = type ? taskConfig(quest)?.tasks?.[type] : undefined;
+        return task?.event_name ?? task?.eventName ?? null;
+    }
+
+    function adapterFor(quest, type) {
+        return adapters.find(quest, {
+            applicationId: firstApplicationId(quest),
+            taskType: type ?? null,
+            eventName: taskEventName(quest, type)
+        });
+    }
+
     async function processAchievement(quest, myGeneration) {
         if (!settings.achievementBypass) {
             log(`Skipped "${quest.config.messages?.questName}": achievement bypass is disabled`);
             return;
         }
-        const adapter = adapters.find(quest);
+        const task = taskConfig(quest).tasks.ACHIEVEMENT_IN_ACTIVITY;
+        const applicationId = firstApplicationId(quest);
+        if (!applicationId || !Number.isFinite(task?.target) || task.target <= 0) throw new Error("Invalid achievement quest");
+        const adapter = adapterFor(quest, "ACHIEVEMENT_IN_ACTIVITY");
         if (!adapter) {
             reportUnsupported(quest, chooseTask(quest));
             return;
         }
-        const task = taskConfig(quest).tasks.ACHIEVEMENT_IN_ACTIVITY;
-        const applicationId = quest.config.application?.id ?? task.applications?.[0]?.id;
-        if (!applicationId || !Number.isFinite(task?.target) || task.target <= 0) throw new Error("Invalid achievement quest");
         log(`Activity protocol: ${adapter.id} for "${quest.config.messages?.questName}"`);
         await adapter.run({
             quest,
             task,
             applicationId,
+            taskType: "ACHIEVEMENT_IN_ACTIVITY",
+            eventName: taskEventName(quest, "ACHIEVEMENT_IN_ACTIVITY"),
             isCurrent: () => myGeneration === generation,
             signal: sessionController?.signal,
             log,
+            getToken: () => findStore("getToken")?.getToken(),
             warn: message => console.warn(`[QuestAutocompleter] ${message}`),
             sleep
         });
@@ -664,7 +680,7 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
                     })),
                     chosenTask: choice.type ?? null,
                     unsupportedReason: choice.type ? null : choice.reason,
-                    adapter: adapters.find(quest)?.id ?? null
+                    adapter: adapterFor(quest, choice.type)?.id ?? null
                 };
             })
         };

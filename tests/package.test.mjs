@@ -64,6 +64,7 @@ test("Lune builds a Shelter-loadable plugin with matching manifest hash", async 
             assert.equal(shelter.plugin.store.logProgress, true);
             assert.equal(shelter.plugin.store.fetchIntervalMinutes, 120);
             assert.equal(shelter.plugin.store.desktopHeartbeatSeconds, 60);
+            assert.equal(shelter.plugin.store.customAdapters, "");
             assert.deepEqual(events, []);
         } finally {
             plugin.onUnload();

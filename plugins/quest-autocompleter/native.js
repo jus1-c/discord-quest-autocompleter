@@ -148,5 +148,5 @@ export function createNative(nativeFetch) {
         throw new Error("Captcha solve timed out");
     }
 
-    return { claimReward, discordsaysAuthorize, discordsaysProgress, solveCaptcha };
+    return { claimReward, discordsaysAuthorize, discordsaysProgress, solveCaptcha, request };
 }

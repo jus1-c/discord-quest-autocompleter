@@ -8,12 +8,14 @@
  * a new quest means adding an adapter here instead of editing the engine.
  */
 
+import { createRecipeAdapter, parseRecipes } from "./recipes.js";
+
 function taskOf(quest, type) {
     const tasks = quest?.config?.taskConfig?.tasks ?? quest?.config?.taskConfigV2?.tasks;
     return tasks?.[type];
 }
 
-export function createAdapters({ native, http }) {
+export function createAdapters({ native, http, getRecipeText }) {
     const acf = {
         id: "acf",
         matches(quest) {
@@ -100,7 +102,13 @@ export function createAdapters({ native, http }) {
     const adapters = [acf];
     return {
         ids: adapters.map(adapter => adapter.id),
-        find(quest) {
+        /** Recipes are the user's explicit instruction, so they win over the built in ones. */
+        find(quest, context = {}) {
+            const text = typeof getRecipeText === "function" ? getRecipeText() : "";
+            for (const recipe of parseRecipes(text).recipes) {
+                const adapter = createRecipeAdapter(recipe, { native });
+                if (adapter.matchesQuest(quest, context)) return adapter;
+            }
             return adapters.find(adapter => adapter.matches(quest)) ?? null;
         }
     };

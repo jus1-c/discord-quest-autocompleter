@@ -75,6 +75,35 @@ Console-only quests (`PLAY_ON_XBOX`, `PLAY_ON_PLAYSTATION`), quests whose tasks 
 
 Application-tracked quests live in `adapters.js`. Each protocol is one adapter with a `matches` probe; adding support for a new activity means adding an adapter, not editing the engine.
 
+### Custom adapters (recipes)
+
+A quest whose application reports its own progress can often be supported without a new build. Paste a recipe into **Advanced → Custom adapters (JSON)** and the plugin runs it before the built-in adapters.
+
+```json
+[
+  {
+    "id": "example",
+    "match": { "applicationId": "1234567890", "taskTypes": ["ACHIEVEMENT_IN_ACTIVITY"], "eventName": "progress" },
+    "report": {
+      "url": "https://discord.com/api/v9/quests/{questId}/heartbeat",
+      "body": { "application_id": "{applicationId}", "value": "{value}" },
+      "valueField": "progress.ACHIEVEMENT_IN_ACTIVITY.value",
+      "step": 1,
+      "intervalSeconds": 20
+    },
+    "finish": { "url": "https://discord.com/api/v9/quests/{questId}/heartbeat", "body": { "terminal": true } }
+  }
+]
+```
+
+- `match` needs at least one of `applicationId`, `questId`, `taskTypes`, `eventName`, so a recipe only runs on the quests it names.
+- `report` is sent repeatedly; `{value}` climbs by `step` (or jumps to `target` with `"step": "target"`) until Discord reports `completed_at` or the value reaches the target.
+- Placeholders: `{questId}`, `{applicationId}`, `{target}`, `{value}`, `{attempt}`, `{eventName}`. A numeric placeholder stays a number in the JSON body.
+- `valueField` is the dotted path to the server's reported progress; leave it out when the endpoint only answers with `completed_at`.
+- `finish` is sent once at the end and is optional.
+
+Safety limits: a recipe may only call `https://discord.com/api/vN/...` or `https://{applicationId}.discordsays.com/...`, cannot set `Authorization`, `Cookie` or `Host`, the interval is clamped to 5-120 seconds, and the document is capped at 8000 characters. Recipes are declarative JSON — no pasted code is executed. A recipe is still only as good as the request it names: Discord may reject progress the application never produced.
+
 ### Dorion limitations
 
 - `PLAY_ON_DESKTOP` runs through Dorion's native HTTP client (`@tauri-apps/plugin-http`) instead of Discord's web transport. Discord rejects quest heartbeats whose user agent has no Electron version, so the plugin sends each heartbeat with a desktop user agent and a matching `X-Super-Properties` header. Only quest requests carry that identity; chat and everything else stay on the normal web session. This path has **not** been confirmed against Discord's servers, so treat a completed quest as the only proof: check that progress rises and survives a reload.

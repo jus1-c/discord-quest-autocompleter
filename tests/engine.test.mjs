@@ -1155,3 +1155,119 @@ test("diagnostics keep the achievement event name of a task", async () => {
         engine.stop();
     }
 });
+
+function achievementQuest(id, target = 4) {
+    return multiTaskQuest(id, {
+        ACHIEVEMENT_IN_ACTIVITY: { target, event_name: "progress", applications: [{ id: "999" }] }
+    });
+}
+
+function recipeFor(overrides = {}) {
+    return {
+        id: "demo",
+        match: { applicationId: "999", taskTypes: ["ACHIEVEMENT_IN_ACTIVITY"] },
+        report: {
+            url: "https://discord.com/api/v9/quests/{questId}/heartbeat",
+            body: { value: "{value}", app: "{applicationId}" },
+            valueField: "progress.ACHIEVEMENT_IN_ACTIVITY.value",
+            step: 1,
+            intervalSeconds: 5
+        },
+        finish: {
+            url: "https://discord.com/api/v9/quests/{questId}/heartbeat",
+            body: { terminal: true }
+        },
+        ...overrides
+    };
+}
+
+test("a custom recipe reports progress until the target", async t => {
+    const { createEngine } = await loadEngine();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const env = runtime(async () => ({ body: { quests: [achievementQuest("910")] } }));
+    env.options.settings.achievementBypass = true;
+    env.options.settings.customAdapters = JSON.stringify([recipeFor()]);
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    const calls = [];
+    env.options.native = {
+        async request(url, options) {
+            const body = options.body;
+            calls.push({ url, body, headers: options.headers });
+            if (body.terminal) return { ok: true, status: 200, body: {} };
+            return { ok: true, status: 200, body: { progress: { ACHIEVEMENT_IN_ACTIVITY: { value: body.value } } } };
+        }
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        for (let i = 0; i < 10; i++) {
+            t.mock.timers.tick(5000);
+            await nextTurn();
+        }
+        const reports = calls.filter(call => !call.body.terminal);
+        assert.deepEqual(reports.map(call => call.body.value), [1, 2, 3, 4]);
+        assert.equal(reports[0].body.app, "999");
+        assert.equal(reports[0].headers.Authorization, "discord-test-token");
+        assert.equal(calls.at(-1).body.terminal, true);
+    } finally {
+        engine.stop();
+    }
+});
+
+test("a custom recipe wins over the built in activity adapter", async t => {
+    const { createEngine } = await loadEngine();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const env = runtime(async () => ({ body: { quests: [achievementQuest("911", 1)] } }));
+    env.options.settings.achievementBypass = true;
+    env.options.settings.customAdapters = JSON.stringify([recipeFor()]);
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    const posts = [];
+    env.options.http.post = async request => { posts.push(request.url); return { body: {} }; };
+    let recipeCalls = 0;
+    env.options.native = {
+        async request() {
+            recipeCalls++;
+            return { ok: true, status: 200, body: { progress: { ACHIEVEMENT_IN_ACTIVITY: { value: 1 } } } };
+        },
+        async discordsaysAuthorize() { return { ok: true, body: { token: "t" } }; },
+        async discordsaysProgress() { return { ok: true, body: {} }; }
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        assert.ok(recipeCalls > 0);
+        assert.deepEqual(posts, []);
+    } finally {
+        engine.stop();
+    }
+});
+
+test("a recipe that does not match leaves the quest to the built in adapter", async t => {
+    const { createEngine } = await loadEngine();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const env = runtime(async request => request.url === "/oauth2/tokens"
+        ? { body: [] }
+        : { body: { quests: [achievementQuest("912", 1)] } });
+    env.options.settings.achievementBypass = true;
+    env.options.settings.customAdapters = JSON.stringify([recipeFor({ match: { applicationId: "12345" } })]);
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    const posts = [];
+    env.options.http.post = async request => { posts.push(request.url); return { body: {} }; };
+    let recipeCalls = 0;
+    env.options.native = {
+        async request() { recipeCalls++; return { ok: true, status: 200, body: {} }; },
+        async discordsaysAuthorize() { return { ok: false, body: {} }; },
+        async discordsaysProgress() { return { ok: true, body: {} }; }
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        assert.equal(recipeCalls, 0);
+        assert.ok(posts.includes("/oauth2/authorize"));
+    } finally {
+        engine.stop();
+    }
+});
