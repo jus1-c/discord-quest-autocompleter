@@ -1,8 +1,16 @@
-﻿# QuestAutocompleter
+﻿# QuestAutocompleter — Shelter port
 
-Vencord plugin that auto-completes Discord quests. Can auto-accept quests, queue them, spoof game/stream/video progress until they're done, and auto-claim if given a captcha solver API key.
+**This is a [Shelter](https://shelter.uwu.network/) plugin for [Dorion](https://github.com/SpikeHD/Dorion), not a Vencord plugin.** It installs from a URL inside Discord's Shelter settings and runs in the web client Dorion hosts. It is not installed through Vencord's plugin folder, and the Vencord plugin it was ported from is untouched.
 
-Handles reloads, account switches, and mid-session enabling without breaking.
+Install in Dorion — Discord **User Settings → Shelter → Plugins → Install Plugin**:
+
+```text
+https://jus1-c.github.io/discord-quest-autocompleter/quest-autocompleter/
+```
+
+What it does: auto-completes Discord quests. It can auto-accept quests, queue them, run video, desktop, stream and activity progress until they finish, and auto-claim if given a captcha solver API key. It handles reloads, account switches and mid-session enabling without breaking.
+
+Everything about this build — install, settings, supported activity protocols, Dorion limits — is in [Shelter / Dorion](#shelter--dorion) below. The sections after it that are marked *upstream* describe the original Vencord plugin this was ported from and do not apply to this build.
 
 ## ⚠️ Disclaimer
 
@@ -14,7 +22,7 @@ The upstream quest script reports that Discord has suspended quest access for us
 
 ## Supported tasks
 
-The following applies to the original Vencord plugin. The Shelter port has additional limitations described below.
+The Shelter port runs these, with the limits described in [Dorion limitations](#dorion-limitations):
 
 - WATCH_VIDEO
 - WATCH_VIDEO_ON_MOBILE
@@ -193,7 +201,9 @@ Keep only one recipe per quest. If a custom recipe for the same application is b
 - **Desktop heartbeat interval** — seconds between heartbeats, 15-110. Discord credits at most two minutes of progress per heartbeat, so a shorter interval is pointless but a longer one loses time.
 - **Desktop user agent override** — leave empty to generate one from the current platform. Any value you type must contain `Electron/<version>`; the generated `X-Super-Properties` is derived from it so the two agree.
 
-## Setup/Install (Vencord)
+## Setup/Install (upstream Vencord plugin)
+
+This section is about the original Vencord plugin and does not describe this build. For this build see [Install from a URL](#install-from-a-url).
 
 Download `questAutocompleter.zip` from the latest release. Unzip, and make sure there is only 1 folder housing the 2 files inside it. 
 
@@ -205,7 +215,7 @@ The plugin asks Discord for new quests every 2 hours. Change that in settings, m
 
 Vencord must be built from source: https://docs.vencord.dev/installing/
 
-## Achievement quests
+## Achievement quests (upstream)
 
 In the Vencord version, achievement quests (earn badges inside an activity) are handled automatically via OAuth. The plugin authorizes itself with the activity, then fires off the badge completion request after a realistic-seeming amount of time. On by default there, can be toggled with "Achievement Bypass" in settings. See the Shelter limitations above for Dorion.
 

@@ -21,6 +21,9 @@ test("Lune builds a Shelter-loadable plugin with matching manifest hash", async 
         const code = readFileSync(join(output, "plugin.js"), "utf8");
         const manifest = JSON.parse(readFileSync(join(output, "plugin.json"), "utf8"));
         assert.equal(manifest.hash, createHash("md5").update(code).digest("hex"));
+        // Shelter shows this text, so it has to say what the build is and where it runs.
+        assert.match(manifest.description, /Shelter plugin for Dorion/);
+        assert.match(manifest.description, /not in Vencord/);
         assert.match(code, /SPDX-License-Identifier: GPL-3\.0-or-later/);
         assert.match(code, /Copyright \(c\) 2017 - Present Tauri Apps Contributors/);
         assert.match(code, /Permission is hereby granted, free of charge/);

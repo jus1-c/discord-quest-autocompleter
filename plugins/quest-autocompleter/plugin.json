@@ -1,5 +1,5 @@
 {
-  "name": "Quest Autocompleter",
+  "name": "Quest Autocompleter (Shelter)",
   "author": "Seramicx; Shelter port",
-  "description": "Automatically processes supported Discord quests. Use at your own risk."
+  "description": "Shelter plugin for Dorion that automates supported Discord quests. A port of the Vencord QuestAutocompleter plugin; it runs in Shelter, not in Vencord. Use at your own risk."
 }
