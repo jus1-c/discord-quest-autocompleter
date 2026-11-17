@@ -393,7 +393,8 @@ export function createRecipeAdapter(recipe, { native, grantActivity }) {
                 if (recipe.report.successPath) {
                     const actual = readPath(response.body, recipe.report.successPath);
                     if (String(actual) !== recipe.report.successEquals) {
-                        throw new Error(`Recipe progress was not accepted (server said ${JSON.stringify(actual ?? null)})`);
+                        const detail = response.body?.message ?? response.body?.error;
+                        throw new Error(`Recipe progress was not accepted (server said ${JSON.stringify(actual ?? null)}${detail ? `: ${String(detail).slice(0, 120)}` : ""})`);
                     }
                 }
                 const reported = Number(readPath(response.body, recipe.report.valueField));

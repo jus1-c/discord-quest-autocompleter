@@ -1565,7 +1565,8 @@ test("the built-in Arise recipe drives an achievement quest end to end", async t
         assert.equal(calls[0].headers["X-Auth-Token"], "activity-token");
         assert.equal(calls[0].headers.Authorization, undefined);
         assert.match(calls[1].url, /\.proxy\/acf\/quest\/progress\?discord_proxy_ticket=ab%2Bcd%2Fef%3D%3D$/);
-        assert.equal(calls[1].headers["X-Auth-Token"], "arise-token");
+        // The quest endpoints take the authorize token; the register token belongs to /.proxy/api.
+        assert.equal(calls[1].headers["X-Auth-Token"], "activity-token");
         assert.deepEqual(calls.slice(1).map(call => call.body), [
             { progress: 1, quest_id: "916" },
             { progress: 2, quest_id: "916" },

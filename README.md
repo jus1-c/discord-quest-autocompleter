@@ -121,7 +121,9 @@ Setup steps are retried up to three times, one second apart, and the activity au
 
 #### Shipped recipe: Arise activities
 
-`builtinRecipes.js` ships one recipe, `arise-activity`, for the application `1557799582732124221`. It was read from the activity's own frontend: authorize, register an Arise session, then report `{ progress, quest_id }` and expect `{ "status": "ok" }`, on a five second throttle.
+`builtinRecipes.js` ships one recipe, `arise-activity`, for the application `1557799582732124221`. It was read from the activity's own frontend: authorize, register a session, then report `{ progress, quest_id }` and expect `{ "status": "ok" }`, on a five second throttle.
+
+Two tokens are involved and they are not interchangeable. The authorize token authenticates the `/.proxy/acf/*` calls, which is why the progress report uses it; the `authToken` from the register call authenticates the application's main `/.proxy/api/*` API instead, and the quest endpoints reject it with `Unable to get user info from auth token`.
 
 ```json
 [
@@ -137,27 +139,27 @@ Setup steps are retried up to three times, one second apart, and the activity au
           "X-Discord-Hostname": "{applicationId}.discordsays.com",
           "X-Arise-Client": "astronaut-prod-main-46567f6"
         },
-        "save": { "ariseUserToken": "token", "proxyTicket": "ticketQuery", "referrer": "referrer" }
+        "save": { "questToken": "token", "proxyTicket": "ticketQuery", "referrer": "referrer" }
       },
       {
         "url": "https://{applicationId}.discordsays.com/.proxy/acf/arise/register?discord_proxy_ticket={proxyTicket}",
         "auth": "none",
         "headers": {
-          "X-Auth-Token": "{ariseUserToken}",
+          "X-Auth-Token": "{questToken}",
           "X-Universe-ID": "d5f3e8ae-12a3-4aa9-a0f0-25e1aa92416b",
           "X-Discord-Activity-Id": "{applicationId}",
           "X-Discord-Hostname": "{applicationId}.discordsays.com",
           "X-Arise-Client": "astronaut-prod-main-46567f6",
           "Referer": "{referrer}"
         },
-        "save": { "ariseToken": "authToken" }
+        "save": { "accountToken": "authToken" }
       }
     ],
     "report": {
       "url": "https://{applicationId}.discordsays.com/.proxy/acf/quest/progress?discord_proxy_ticket={proxyTicket}",
       "auth": "none",
       "headers": {
-        "X-Auth-Token": "{ariseToken}",
+        "X-Auth-Token": "{questToken}",
         "X-Universe-ID": "d5f3e8ae-12a3-4aa9-a0f0-25e1aa92416b",
         "X-Discord-Activity-Id": "{applicationId}",
         "X-Discord-Hostname": "{applicationId}.discordsays.com",
