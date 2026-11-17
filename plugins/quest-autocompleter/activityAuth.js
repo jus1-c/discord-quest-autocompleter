@@ -8,20 +8,15 @@
  * keeps the account token out of third party hosts and gives both callers one implementation.
  */
 
-export function createActivityAuth({ native, http }) {
-    /** Keeps a rejected handshake explainable without ever printing a token or a code. */
-    function describeResponse(result) {
-        const status = Number.isInteger(result?.status) ? `status ${result.status}` : "no response";
-        const body = result?.body;
-        if (!body || typeof body !== "object") return status;
-        const safe = {};
-        for (const [key, value] of Object.entries(body)) {
-            safe[key] = /token|code|secret|authorization/i.test(key) ? "<redacted>" : value;
-        }
-        const text = JSON.stringify(safe);
-        return `${status}${text && text !== "{}" ? ` ${text.slice(0, 140)}` : ""}`;
-    }
+import { describeResponse } from "./redact.js";
 
+const AUTHORIZE_ATTEMPTS = 3;
+
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+export function createActivityAuth({ native, http }) {
     /**
      * Returns `{ token, referrer, ticket, cleanup }`. `token` is null when the session changed
      * under us; `cleanup` must still run so a freshly created grant is revoked.
@@ -94,17 +89,28 @@ export function createActivityAuth({ native, http }) {
             const ticket = ticketResponse.body?.ticket;
             if (!ticket) throw new Error("Activity proxy ticket unavailable");
             const referrer = `https://${applicationId}.discordsays.com/?instance_id=example-cl-instance&platform=desktop&discord_proxy_ticket=${ticket}`;
-            const authResult = await native.discordsaysAuthorize({
-                appId: applicationId,
-                questId,
-                referrer,
-                ticket,
-                code,
-                signal,
-                userAgent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
-                headers,
-                body
-            });
+            // The activity's own client runs this call in a three attempt loop, so a first
+            // refusal (its server answers 500 on some session states) is not the end of the run.
+            let authResult = null;
+            for (let attempt = 1; attempt <= AUTHORIZE_ATTEMPTS; attempt++) {
+                if (!isCurrent()) return { token: null, referrer, ticket, ticketQuery: null, cleanup };
+                authResult = await native.discordsaysAuthorize({
+                    appId: applicationId,
+                    questId,
+                    referrer,
+                    ticket,
+                    code,
+                    signal,
+                    userAgent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
+                    headers,
+                    body
+                });
+                if (authResult?.ok && authResult.body?.token) break;
+                if (attempt < AUTHORIZE_ATTEMPTS) {
+                    warn(`Activity authorization refused (attempt ${attempt}/${AUTHORIZE_ATTEMPTS}): ${describeResponse(authResult)}`);
+                    await delay(1000 * attempt);
+                }
+            }
             if (!isCurrent()) return { token: null, referrer, ticket, ticketQuery: null, cleanup };
             if (!authResult.ok || !authResult.body?.token) {
                 throw new Error(`Activity authorization failed (${describeResponse(authResult)})`);

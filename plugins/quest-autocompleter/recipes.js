@@ -14,6 +14,8 @@
  *   finish - one request after the loop
  */
 
+import { describeResponse } from "./redact.js";
+
 const PLACEHOLDERS = ["questId", "applicationId", "target", "value", "attempt", "eventName"];
 const FORBIDDEN_HEADERS = ["authorization", "cookie", "host"];
 const METHODS = ["POST", "GET", "DELETE"];
@@ -21,6 +23,7 @@ const DISCORD_URL = /^https:\/\/discord\.com\/api\/v\d+\//;
 const DISCORDS_SAYS_URL = /^https:\/\/\{applicationId\}\.discordsays\.com\//;
 const MAX_DOCUMENT_LENGTH = 8000;
 const MAX_SETUP_STEPS = 5;
+const SETUP_ATTEMPTS = 3;
 const SETUP_KINDS = ["activityAuthorize"];
 
 function clampNumber(value, fallback, min, max) {
@@ -318,8 +321,30 @@ export function createRecipeAdapter(recipe, { native, grantActivity }) {
                     await sleep(((Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter : 10) + 1) * 1000);
                     return { ok: false, status: 429, body: response.body };
                 }
-                if (!response.ok) throw new Error(`Recipe request rejected (status ${response.status})`);
+                if (!response.ok) throw new Error(`Recipe request rejected (${describeResponse(response)})`);
                 return response;
+            }
+
+            /**
+             * Setup requests are retried the way the activity's own client retries them: its
+             * register and authorize calls run in a three attempt loop, because a first call for
+             * a session can fail and succeed immediately afterwards.
+             */
+            async function sendSetup(request) {
+                let lastError;
+                for (let attempt = 1; attempt <= SETUP_ATTEMPTS; attempt++) {
+                    if (!isCurrent()) return null;
+                    try {
+                        return await send(request);
+                    } catch (error) {
+                        lastError = error;
+                        if (attempt < SETUP_ATTEMPTS) {
+                            log(`[${questName}] ${request.method} ${new URL(fill(request.url, values())).pathname} failed (attempt ${attempt}/${SETUP_ATTEMPTS}): ${error.message}`);
+                            await sleep(1000 * attempt);
+                        }
+                    }
+                }
+                throw lastError;
             }
 
             const cleanups = [];
@@ -345,8 +370,8 @@ export function createRecipeAdapter(recipe, { native, grantActivity }) {
                     log(`[${questName}] Activity authorization ready`);
                     continue;
                 }
-                const response = await send(setupStep);
-                if (!isCurrent()) return;
+                const response = await sendSetup(setupStep);
+                if (!response || !isCurrent()) return;
                 for (const [name, path] of Object.entries(setupStep.save)) {
                     const value = savedValue(response, path);
                     if (value === undefined) throw new Error(`Recipe setup did not return ${path}`);

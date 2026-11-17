@@ -290,7 +290,7 @@ export function settings() {
                 </SwitchItem>
                 <SwitchItem
                     checked={store.useBuiltInRecipes}
-                    note="Ships a recipe for Arise activities such as Audible's Exoplanet. Turn it off to run only your own recipes."
+                    note="Ships recipes for activity quests whose application reports its own progress. Turn it off to run only your own recipes."
                     onChange={value => { store.useBuiltInRecipes = value; }}
                 >
                     Use built-in recipes

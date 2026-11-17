@@ -8,7 +8,8 @@
  * declarative documents a user can paste into the settings; shipping them means a supported
  * quest works out of the box and can still be inspected, edited or switched off.
  *
- * Arise (Audible's Exoplanet) was read from the activity's own frontend:
+ * The Arise recipe was read from a real activity's own frontend, so it follows the same
+ * handshake the application performs itself:
  *   POST /.proxy/acf/authorize      { code, activityId }        -> { token, access_token, user }
  *   POST /.proxy/acf/arise/register                           -> { authToken }
  *   POST /.proxy/acf/quest/progress { progress, quest_id }      -> { status: "ok" }

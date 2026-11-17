@@ -1325,6 +1325,107 @@ test("a recipe can run a setup step and use what it captured", async t => {
     }
 });
 
+test("a refused setup step is retried like the activity's own client", async t => {
+    const { createEngine } = await loadEngine();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const env = runtime(async () => ({ body: { quests: [achievementQuest("918", 2)] } }));
+    env.options.settings.achievementBypass = true;
+    env.options.settings.customAdapters = JSON.stringify([{
+        id: "arise",
+        match: { applicationId: "999", taskTypes: ["ACHIEVEMENT_IN_ACTIVITY"] },
+        setup: [{
+            url: "https://{applicationId}.discordsays.com/.proxy/acf/arise/register",
+            headers: { "X-Discord-Activity-Id": "{applicationId}" },
+            save: { authToken: "body.authToken" }
+        }],
+        report: {
+            url: "https://{applicationId}.discordsays.com/.proxy/acf/quest/progress",
+            headers: { "X-Auth-Token": "{authToken}" },
+            body: { progress: "{value}", quest_id: "{questId}" },
+            intervalSeconds: 5,
+            successPath: "status"
+        }
+    }]);
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    const calls = [];
+    let failures = 2;
+    env.options.native = {
+        async request(url, options) {
+            calls.push({ url, headers: options.headers, body: options.body });
+            if (url.endsWith("/arise/register")) {
+                if (failures > 0) {
+                    failures--;
+                    return { ok: false, status: 500, body: { message: "internal" } };
+                }
+                return { ok: true, status: 200, body: { authToken: "tok-123" } };
+            }
+            return { ok: true, status: 200, body: { status: "ok" } };
+        }
+    };
+    const engine = createEngine(env.options);
+    try {
+        await engine.start();
+        await nextTurn();
+        t.mock.timers.tick(1000);
+        await nextTurn();
+        t.mock.timers.tick(2000);
+        await nextTurn();
+        const registers = calls.filter(call => call.url.endsWith("/arise/register"));
+        assert.equal(registers.length, 3);
+        t.mock.timers.tick(5000);
+        await nextTurn();
+        const progress = calls.filter(call => call.url.endsWith("/quest/progress"));
+        assert.equal(progress.length >= 1, true);
+        assert.equal(progress[0].headers["X-Auth-Token"], "tok-123");
+    } finally {
+        engine.stop();
+    }
+});
+
+test("a refused request names the status and the server's answer without leaking tokens", async t => {
+    const { createEngine } = await loadEngine();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const env = runtime(async () => ({ body: { quests: [achievementQuest("919", 2)] } }));
+    env.options.settings.achievementBypass = true;
+    env.options.settings.customAdapters = JSON.stringify([{
+        id: "leaky",
+        match: { applicationId: "999", taskTypes: ["ACHIEVEMENT_IN_ACTIVITY"] },
+        setup: [{
+            url: "https://discord.com/api/v9/x",
+            save: { value: "token" }
+        }],
+        report: {
+            url: "https://discord.com/api/v9/x",
+            body: { value: "{value}" }
+        }
+    }]);
+    env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
+    env.options.native = {
+        async request() {
+            return { ok: false, status: 500, body: { message: "internal", token: "should-not-appear" } };
+        }
+    };
+    const engine = createEngine(env.options);
+    const originalWarn = console.warn;
+    const warnings = [];
+    console.warn = (...args) => warnings.push(args.join(" "));
+    try {
+        await engine.start();
+        await nextTurn();
+        t.mock.timers.tick(1000);
+        await nextTurn();
+        t.mock.timers.tick(2000);
+        await nextTurn();
+        const text = warnings.join(" ");
+        assert.match(text, /status 500/);
+        assert.match(text, /"message":"internal"/);
+        assert.doesNotMatch(text, /should-not-appear/);
+    } finally {
+        engine.stop();
+        console.warn = originalWarn;
+    }
+});
+
 test("a recipe that the server rejects does not claim success", async t => {
     const { createEngine } = await loadEngine();
     t.mock.timers.enable({ apis: ["setTimeout"] });

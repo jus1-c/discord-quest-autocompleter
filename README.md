@@ -70,8 +70,8 @@ Open the gear icon on the plugin card in **Shelter → Plugins**.
 Activity quests are the only family whose console output explains itself before anything is attempted:
 
 ```
-[QuestAutocompleter] Activity quest "Audible's Exoplanet": apps [1557799582732124221], built-in: arise-activity | custom: none
-[QuestAutocompleter] Activity protocol: recipe:arise-activity for "Audible's Exoplanet"
+[QuestAutocompleter] Activity quest "<quest name>": apps [<application id>], built-in: arise-activity | custom: none
+[QuestAutocompleter] Activity protocol: recipe:arise-activity for "<quest name>"
 ```
 
 The first line is there so a quest that is not finishing can be diagnosed without a debugger: it lists every application id the quest carries and which recipes parsed (or the first parse problem).
@@ -117,7 +117,9 @@ Recipes also accept a `setup` array that runs before the progress loop. A setup 
 
 An activity request has no cookies and no iframe, so the activity proxy ticket that the activity itself gets from its iframe URL is saved as `{proxyTicket}` (percent-encoded; the raw value is `{ticket}`) and repeated in the URL (`...?discord_proxy_ticket={proxyTicket}`) as well as in the `Referer`, which is `{referrer}`, the full iframe URL.
 
-#### Shipped recipe: Arise activities (for example Audible's Exoplanet)
+Setup steps are retried up to three times, one second apart, and the activity authorization the same way, because a first call in a session can be refused and succeed immediately afterwards. The progress `report` is never retried, so progress cannot be counted twice. A refused request reports the status and the server's answer (with tokens, codes and secrets replaced) instead of a bare "failed".
+
+#### Shipped recipe: Arise activities
 
 `builtinRecipes.js` ships one recipe, `arise-activity`, for the application `1557799582732124221`. It was read from the activity's own frontend: authorize, register an Arise session, then report `{ progress, quest_id }` and expect `{ "status": "ok" }`, on a five second throttle.
 
