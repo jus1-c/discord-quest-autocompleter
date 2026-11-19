@@ -1255,9 +1255,10 @@ test("a recipe that does not match leaves the quest to the built in adapter", as
     env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
     const posts = [];
     env.options.http.post = async request => { posts.push(request.url); return { body: {} }; };
-    let recipeCalls = 0;
+    // The activity probe also goes through native.request, so count only the recipe's own calls.
+    const nativeUrls = [];
     env.options.native = {
-        async request() { recipeCalls++; return { ok: true, status: 200, body: {} }; },
+        async request(url) { nativeUrls.push(url); return { ok: true, status: 200, body: {} }; },
         async discordsaysAuthorize() { return { ok: false, body: {} }; },
         async discordsaysProgress() { return { ok: true, body: {} }; }
     };
@@ -1265,7 +1266,7 @@ test("a recipe that does not match leaves the quest to the built in adapter", as
     try {
         await engine.start();
         await nextTurn();
-        assert.equal(recipeCalls, 0);
+        assert.equal(nativeUrls.filter(url => url.includes("/heartbeat")).length, 0);
         assert.ok(posts.includes("/oauth2/authorize"));
     } finally {
         engine.stop();

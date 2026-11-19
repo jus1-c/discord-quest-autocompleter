@@ -26,6 +26,22 @@ const MAX_SETUP_STEPS = 5;
 const SETUP_ATTEMPTS = 3;
 const SETUP_KINDS = ["activityAuthorize"];
 
+/**
+ * The rules a recipe author has to satisfy, published so the diagnostics export and the README
+ * describe the same numbers the validator enforces instead of a copy that can drift.
+ */
+export const RECIPE_LIMITS = {
+    documentCharacters: MAX_DOCUMENT_LENGTH,
+    setupSteps: MAX_SETUP_STEPS,
+    setupAttempts: SETUP_ATTEMPTS,
+    methods: METHODS,
+    setupKinds: SETUP_KINDS,
+    placeholders: PLACEHOLDERS,
+    forbiddenHeaders: FORBIDDEN_HEADERS,
+    reportIntervalSeconds: { min: 5, max: 120, default: 20 },
+    allowedHosts: ["https://discord.com/api/v<n>/", "https://{applicationId}.discordsays.com/"]
+};
+
 function clampNumber(value, fallback, min, max) {
     const number = Number(value);
     if (!Number.isFinite(number)) return fallback;

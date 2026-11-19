@@ -7,6 +7,7 @@
 import { normalizeQuest } from "./quests.js";
 import { createAdapters } from "./adapters.js";
 import { BUILT_IN_RECIPES } from "./builtinRecipes.js";
+import { buildAuthoringPrompt, builtInRecipeDocuments } from "./recipeGuide.js";
 
 export function createEngine({ flux, http, settings, native, desktopTransport }) {
     const { dispatcher } = flux;
@@ -554,6 +555,9 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
                         lastActivityFailure = {
                             questId: quest.id,
                             name: quest.config.messages?.questName ?? null,
+                            applicationIds: questApplicationIds(quest),
+                            taskType: type,
+                            eventName: taskEventName(quest, type),
                             step: error?.step ?? null,
                             status: error?.status ?? error?.res?.status ?? null,
                             serverMessage: error?.serverMessage ?? null,
@@ -721,6 +725,15 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
             adapters: adapters.ids,
             recipes: adapters.describe(),
             lastActivityFailure,
+            // What the probe read from the failing application's own frontend, and what the
+            // handshake therefore sent. Null until an achievement quest has been attempted.
+            activityProbe: adapters.lastProbe?.() ?? null,
+            // Everything needed to write a recipe for the quest above, plus the prompt that tells
+            // an agent which evidence it must still ask for. See recipeGuide.js.
+            recipeAuthoring: buildAuthoringPrompt({
+                failure: lastActivityFailure,
+                builtInRecipes: builtInRecipeDocuments()
+            }),
             quests: allQuests().map(quest => {
                 const choice = chooseTask(quest);
                 return {

@@ -10,6 +10,7 @@
 
 import { createRecipeAdapter, parseRecipes } from "./recipes.js";
 import { createActivityAuth } from "./activityAuth.js";
+import { headersFromProbe, probeActivity } from "./probe.js";
 
 function taskOf(quest, type) {
     const tasks = quest?.config?.taskConfig?.tasks ?? quest?.config?.taskConfigV2?.tasks;
@@ -18,6 +19,9 @@ function taskOf(quest, type) {
 
 export function createAdapters({ native, http, getRecipeTexts, resolveChannelId }) {
     const activityAuth = createActivityAuth({ native, http });
+
+    /** The last probe result, so the diagnostics can say what was read and what was sent. */
+    let lastProbe = null;
 
     /**
      * Every activity handshake is scoped to a channel, because that is what Discord's own client
@@ -39,8 +43,26 @@ export function createAdapters({ native, http, getRecipeTexts, resolveChannelId 
             return Boolean(taskOf(quest, "ACHIEVEMENT_IN_ACTIVITY"));
         },
         async run({ quest, task, applicationId, isCurrent, signal, log, warn, sleep }) {
+            // Read the application's own frontend before the handshake. The activity backend
+            // resolves an environment from the universe id it is sent, and that id is only
+            // published in that bundle, so without it the authorize call is refused with
+            // "Env data not found" even though every earlier step succeeded.
+            const probe = await probeActivity({
+                appId: applicationId,
+                request: typeof native?.request === "function" ? native.request : undefined,
+                signal
+            });
+            const hostname = `${applicationId}.discordsays.com`;
+            const headers = headersFromProbe(probe, { appId: applicationId, hostname });
+            lastProbe = probe;
+            if (probe?.universeId) {
+                log(`[${quest.config.messages?.questName}] Activity probe: universe ${probe.universeId}`);
+            } else {
+                warn(`Activity probe could not read the application bundle for ${applicationId}; the handshake goes out with the generic headers only.`);
+            }
+
             const authorization = await grant({
-                applicationId, questId: quest.id, isCurrent, signal, warn
+                applicationId, questId: quest.id, isCurrent, signal, warn, headers
             });
             try {
                 if (!authorization.token) return;
@@ -51,6 +73,7 @@ export function createAdapters({ native, http, getRecipeTexts, resolveChannelId 
                         appId: applicationId, questId: quest.id, referrer: authorization.referrer,
                         ticket: authorization.ticket, token: authorization.token, progress: done,
                         userAgent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
+                        headers,
                         signal
                     });
                     if (!isCurrent()) return;
@@ -85,6 +108,7 @@ export function createAdapters({ native, http, getRecipeTexts, resolveChannelId 
     return {
         ids: adapters.map(adapter => adapter.id),
         describe,
+        lastProbe: () => lastProbe,
         grantActivity: grant,
         /**
          * Sources are tried in the order the engine lists them: shipped recipes first, then the

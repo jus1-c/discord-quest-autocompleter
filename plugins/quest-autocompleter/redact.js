@@ -25,6 +25,11 @@ function scrub(value, depth = 0) {
     return value;
 }
 
+/** Anything that may be pasted somewhere else goes through this first. */
+export function redact(value) {
+    return scrub(value);
+}
+
 /** `status 500 {"message":"…"}` — the shape a console line needs to be actionable. */
 export function describeResponse(result) {
     const status = Number.isInteger(result?.status) ? `status ${result.status}` : "no response";
