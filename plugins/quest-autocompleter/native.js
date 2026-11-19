@@ -46,7 +46,12 @@ function delay(ms, signal) {
 }
 
 export function createNative(nativeFetch) {
-    async function request(url, { method = "POST", headers = {}, body, signal } = {}) {
+    /**
+     * `as` says how to read the response body: "json" for the Discord API, "text" for the public
+     * activity pages and bundles the probe reads. Parsing everything as JSON silently turned a
+     * readable HTML page and module script into null, which made every probe look empty.
+     */
+    async function request(url, { method = "POST", headers = {}, body, as = "json", signal } = {}) {
         if (typeof nativeFetch !== "function") throw new Error("Dorion native HTTP is unavailable");
         const response = await nativeFetch(url, {
             method,
@@ -55,6 +60,11 @@ export function createNative(nativeFetch) {
             maxRedirections: 0,
             signal
         });
+        if (as === "text") {
+            let text = null;
+            try { text = await response.text(); } catch { }
+            return { ok: response.ok, status: response.status, body: text };
+        }
         let parsed = null;
         try { parsed = await response.json(); } catch { }
         return { ok: response.ok, status: response.status, body: parsed };

@@ -112,19 +112,30 @@ export function headersFromProbe(probe, { appId, hostname } = {}) {
  * thing that can reach the activity host from the renderer. Never throws: a probe that fails
  * returns nulls, because the caller's fallback is the generic adapter.
  */
-export async function probeActivity({ appId, request, signal }) {
-    if (typeof request !== "function" || !/^\d+$/.test(String(appId ?? ""))) return null;
+export async function probeActivity({ appId, request, signal, onError }) {
+    const fail = reason => {
+        if (typeof onError === "function") onError(reason);
+        return null;
+    };
+    if (typeof request !== "function") return fail("no native transport");
+    if (!/^\d+$/.test(String(appId ?? ""))) return fail("application id is not numeric");
     const origin = `https://${appId}.discordsays.com/`;
     try {
-        const page = await request(origin, { method: "GET", signal });
+        // `as: "text"` matters: these are an HTML page and a JavaScript bundle, not JSON, and a
+        // JSON parse turns both into null without raising.
+        const page = await request(origin, { method: "GET", as: "text", signal });
+        if (page?.ok === false) return fail(`page answered ${page.status}`);
         const html = typeof page?.body === "string" ? page.body : "";
+        if (!html) return fail("page body was empty");
         const bundleUrl = findBundleUrl(html, appId);
-        if (!bundleUrl) return null;
-        const bundle = await request(bundleUrl, { method: "GET", signal });
+        if (!bundleUrl) return fail("page has no module script");
+        const bundle = await request(bundleUrl, { method: "GET", as: "text", signal });
+        if (bundle?.ok === false) return fail(`bundle answered ${bundle.status}`);
         const source = typeof bundle?.body === "string" ? bundle.body : "";
-        if (!source || source.length > MAX_BUNDLE_CHARS) return null;
+        if (!source) return fail("bundle body was empty");
+        if (source.length > MAX_BUNDLE_CHARS) return fail("bundle is larger than the cap");
         return parseActivity(appId, html, source);
-    } catch {
-        return null;
+    } catch (error) {
+        return fail(`request failed: ${String(error?.message ?? error).slice(0, 120)}`);
     }
 }

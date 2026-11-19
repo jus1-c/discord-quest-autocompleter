@@ -47,18 +47,20 @@ export function createAdapters({ native, http, getRecipeTexts, resolveChannelId 
             // resolves an environment from the universe id it is sent, and that id is only
             // published in that bundle, so without it the authorize call is refused with
             // "Env data not found" even though every earlier step succeeded.
+            let probeError = null;
             const probe = await probeActivity({
                 appId: applicationId,
                 request: typeof native?.request === "function" ? native.request : undefined,
-                signal
+                signal,
+                onError: reason => { probeError = reason; }
             });
             const hostname = `${applicationId}.discordsays.com`;
             const headers = headersFromProbe(probe, { appId: applicationId, hostname });
-            lastProbe = probe;
+            lastProbe = probe ? { ...probe, error: null } : { appId: applicationId, error: probeError };
             if (probe?.universeId) {
                 log(`[${quest.config.messages?.questName}] Activity probe: universe ${probe.universeId}`);
             } else {
-                warn(`Activity probe could not read the application bundle for ${applicationId}; the handshake goes out with the generic headers only.`);
+                warn(`Activity probe could not read the application bundle for ${applicationId} (${probeError ?? "no universe id in the bundle"}); the handshake goes out with the generic headers only.`);
             }
 
             const authorization = await grant({

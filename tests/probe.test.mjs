@@ -89,6 +89,63 @@ test("probe headers are the ones the activity's own client sends", async () => {
     assert.equal(headers["X-Arise-Client"], undefined);
 });
 
+test("a probe reads text, not JSON, from the page and its bundle", async () => {
+    const { probeActivity } = await loadProbe();
+    const asked = [];
+    const probe = await probeActivity({
+        appId: "1557307363499712582",
+        request: async (url, options) => {
+            asked.push({ url, as: options?.as });
+            return url.endsWith(".js") ? { body: WILD_HORSE_BUNDLE } : { body: WILD_HORSE_HTML };
+        }
+    });
+
+    // Without as: "text" the native transport parses these as JSON, gets null, and the probe
+    // reports an empty application even though both requests succeeded.
+    assert.deepEqual(asked.map(entry => entry.as), ["text", "text"]);
+    assert.equal(probe.universeId, "ecd7bb92-1e08-4ad1-b76f-0d33c5013295");
+});
+
+test("the native transport can read a text response", async () => {
+    const { createNative } = await import("../plugins/quest-autocompleter/native.js");
+    const calls = [];
+    const native = createNative(async (url, options) => {
+        calls.push({ url, options });
+        return {
+            ok: true,
+            status: 200,
+            json: async () => { throw new Error("not json"); },
+            text: async () => "<html></html>"
+        };
+    });
+
+    const text = await native.request("https://1.discordsays.com/", { method: "GET", as: "text" });
+    assert.equal(text.body, "<html></html>");
+    assert.equal(text.ok, true);
+    assert.equal(calls[0].options.method, "GET");
+    // The default stays JSON, so the Discord API calls are unchanged.
+    const asJson = await native.request("https://discord.com/api/v9/quests/@me", { method: "GET" });
+    assert.equal(asJson.body, null);
+});
+
+test("a probe that cannot read the application says why", async () => {
+    const { probeActivity } = await loadProbe();
+    const reasons = [];
+    const run = options => probeActivity({ appId: "123", onError: r => reasons.push(r), ...options });
+
+    assert.equal(await run({ request: undefined }), null);
+    assert.equal(await run({ request: async () => { throw new Error("offline"); } }), null);
+    assert.equal(await run({ request: async () => ({ ok: true, body: "<html></html>" }) }), null);
+    assert.equal(await run({ request: async () => ({ ok: false, status: 403, body: "" }) }), null);
+
+    assert.deepEqual(reasons, [
+        "no native transport",
+        "request failed: offline",
+        "page has no module script",
+        "page answered 403"
+    ]);
+});
+
 test("a probe that cannot read the application returns nothing instead of throwing", async () => {
     const { probeActivity } = await loadProbe();
 
