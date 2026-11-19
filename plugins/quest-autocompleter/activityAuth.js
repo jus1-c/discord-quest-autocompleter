@@ -97,7 +97,10 @@ export function createActivityAuth({ native, http }) {
             if (!code) throw new Error("Activity authorization did not return a code");
             const ticketResponse = await http.post({
                 url: `/applications/${applicationId}/proxy-tickets`,
-                body: { use_stateless_ticket: true, surface: 0 }
+                // Requested without `use_stateless_ticket`: a stateless ticket carries no activity
+                // instance, so the activity proxy cannot resolve that application's environment and
+                // answers 500 {"message":"Env data not found"} before the app is even asked.
+                body: {}
             });
             if (!isCurrent()) return { token: null, referrer: null, ticket: null, cleanup };
             const ticket = ticketResponse.body?.ticket;

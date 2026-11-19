@@ -61,6 +61,34 @@ test("the authorization handshake sends the encoded ticket to the activity", asy
     assert.equal(calls[0].code, "the-code");
 });
 
+test("the proxy ticket is requested statefully so it carries the activity environment", async () => {
+    const { createActivityAuth } = await loadAuth();
+    const posts = [];
+    const http = {
+        get: async () => ({ body: [] }),
+        post: async ({ url, body }) => {
+            posts.push({ url, body });
+            if (url === "/oauth2/authorize") {
+                return { body: { location: "https://discord.com/oauth2/authorized?code=c" } };
+            }
+            return { body: { ticket: "t" } };
+        },
+        del: async () => ({ body: {} })
+    };
+    const native = { async discordsaysAuthorize() { return { ok: true, status: 200, body: { token: "x" } }; } };
+
+    await createActivityAuth({ native, http }).grant({
+        applicationId: "123", questId: "456", isCurrent: () => true, warn: () => { }
+    });
+
+    const ticketCall = posts.find(entry => entry.url === "/applications/123/proxy-tickets");
+    assert.ok(ticketCall, "proxy tickets must be requested");
+    // A stateless ticket has no activity instance behind it, so the activity proxy cannot find
+    // that application's environment and answers 500 {"message":"Env data not found"}.
+    assert.equal(ticketCall.body?.use_stateless_ticket, undefined);
+    assert.deepEqual(ticketCall.body, {});
+});
+
 test("a refused authorization reports the status and the step it failed at", async () => {
     const { createActivityAuth } = await loadAuth();
     const http = {
