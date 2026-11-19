@@ -10,9 +10,23 @@ import { BUILT_IN_RECIPES } from "./builtinRecipes.js";
 
 export function createEngine({ flux, http, settings, native, desktopTransport }) {
     const { dispatcher } = flux;
+    /**
+     * The channel an activity handshake is scoped to. A private channel is used first: it exists
+     * for every account and an activity there is not shown to a guild.
+     */
+    function resolveActivityChannelId() {
+        const channelStore = findStore("getSortedPrivateChannels");
+        const privateId = channelStore?.getSortedPrivateChannels()?.[0]?.id;
+        if (privateId) return privateId;
+        const guildStore = findStore("getAllGuilds");
+        return Object.values(guildStore?.getAllGuilds() ?? {})
+            .find(guild => guild?.VOCAL?.length)?.VOCAL[0]?.channel?.id ?? null;
+    }
+
     const adapters = createAdapters({
         native,
         http,
+        resolveChannelId: resolveActivityChannelId,
         getRecipeTexts: () => {
             const sources = [];
             if (settings.useBuiltInRecipes !== false) sources.push({ label: "built-in", text: BUILT_IN_RECIPES });

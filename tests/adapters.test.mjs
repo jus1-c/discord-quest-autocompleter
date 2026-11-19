@@ -33,6 +33,36 @@ test("the acf adapter claims only achievement quests", async () => {
     assert.equal(adapter.id, "acf");
 });
 
+test("the activity handshake is scoped to a channel even when the caller does not name one", async () => {
+    const { createAdapters } = await loadAdapters();
+    const requested = [];
+    const native = {
+        async request(url, options) { requested.push({ url, options }); return { ok: true, status: 200, body: {} }; },
+        async discordsaysAuthorize() { return { ok: true, status: 200, body: { token: "t" } }; }
+    };
+    const http = {
+        get: async () => ({ body: [] }),
+        post: async ({ url, body }) => {
+            requested.push({ url, body });
+            if (url === "/oauth2/authorize") {
+                return { body: { location: "https://discord.com/oauth2/authorized?code=c" } };
+            }
+            return { body: { ticket: "t" } };
+        },
+        del: async () => ({ body: {} })
+    };
+
+    const adapters = createAdapters({
+        native,
+        http,
+        resolveChannelId: () => "999"
+    });
+    await adapters.grantActivity({ applicationId: "123", questId: "456", isCurrent: () => true, warn: () => { } });
+
+    const ticketCall = requested.find(entry => entry.url === "/applications/123/proxy-tickets");
+    assert.deepEqual(ticketCall.body, { use_stateless_ticket: true, channel_id: "999" });
+});
+
 test("an adapter is not offered without the native transport it needs", async () => {
     const { createAdapters } = await loadAdapters();
     const adapters = createAdapters({ native: undefined, http: {} });

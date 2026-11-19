@@ -38,8 +38,12 @@ export function createActivityAuth({ native, http }) {
      * `headers` and `body` are the activity's own protocol details (a recipe supplies them):
      * the endpoints live behind the activity proxy on the application's own host, and the
      * application decides which headers and body fields its authorize call needs.
+     *
+     * `channelId` scopes the proxy ticket to a channel, which is what Discord's own client does
+     * before it opens an activity; the activity proxy resolves the application's environment
+     * through it.
      */
-    async function grant({ applicationId, questId, isCurrent, signal, warn, headers, body }) {
+    async function grant({ applicationId, questId, channelId, isCurrent, signal, warn, headers, body }) {
         const baselineResponse = await http.get({ url: "/oauth2/tokens" });
         if (!isCurrent()) return { token: null, referrer: null, ticket: null, cleanup: async () => { } };
         if (!Array.isArray(baselineResponse.body)) throw new Error("Cannot determine existing OAuth grants");
@@ -97,10 +101,14 @@ export function createActivityAuth({ native, http }) {
             if (!code) throw new Error("Activity authorization did not return a code");
             const ticketResponse = await http.post({
                 url: `/applications/${applicationId}/proxy-tickets`,
-                // Requested without `use_stateless_ticket`: a stateless ticket carries no activity
-                // instance, so the activity proxy cannot resolve that application's environment and
-                // answers 500 {"message":"Env data not found"} before the app is even asked.
-                body: {}
+                // Copied from Discord's own client (module 730602): a stateless ticket plus the
+                // channel it is bound to. Without `channel_id` the activity proxy has no channel
+                // to resolve the application's environment through, and answers
+                // 500 {"message":"Env data not found"} before the application is even asked.
+                body: {
+                    use_stateless_ticket: true,
+                    ...(channelId ? { channel_id: channelId } : {})
+                }
             });
             if (!isCurrent()) return { token: null, referrer: null, ticket: null, cleanup };
             const ticket = ticketResponse.body?.ticket;

@@ -61,7 +61,34 @@ test("the authorization handshake sends the encoded ticket to the activity", asy
     assert.equal(calls[0].code, "the-code");
 });
 
-test("the proxy ticket is requested statefully so it carries the activity environment", async () => {
+test("the proxy ticket matches Discord's own client: stateless, bound to a channel", async () => {
+    const { createActivityAuth } = await loadAuth();
+    const posts = [];
+    const http = {
+        get: async () => ({ body: [] }),
+        post: async ({ url, body }) => {
+            posts.push({ url, body });
+            if (url === "/oauth2/authorize") {
+                return { body: { location: "https://discord.com/oauth2/authorized?code=c" } };
+            }
+            return { body: { ticket: "t" } };
+        },
+        del: async () => ({ body: {} })
+    };
+    const native = { async discordsaysAuthorize() { return { ok: true, status: 200, body: { token: "x" } }; } };
+
+    await createActivityAuth({ native, http }).grant({
+        applicationId: "123", questId: "456", channelId: "789", isCurrent: () => true, warn: () => { }
+    });
+
+    const ticketCall = posts.find(entry => entry.url === "/applications/123/proxy-tickets");
+    assert.ok(ticketCall, "proxy tickets must be requested");
+    // Both fields are what module 730602 of Discord's client sends. Without channel_id the
+    // activity proxy has no channel to resolve the application's environment through.
+    assert.deepEqual(ticketCall.body, { use_stateless_ticket: true, channel_id: "789" });
+});
+
+test("a handshake with no channel still asks for a ticket instead of failing", async () => {
     const { createActivityAuth } = await loadAuth();
     const posts = [];
     const http = {
@@ -82,11 +109,7 @@ test("the proxy ticket is requested statefully so it carries the activity enviro
     });
 
     const ticketCall = posts.find(entry => entry.url === "/applications/123/proxy-tickets");
-    assert.ok(ticketCall, "proxy tickets must be requested");
-    // A stateless ticket has no activity instance behind it, so the activity proxy cannot find
-    // that application's environment and answers 500 {"message":"Env data not found"}.
-    assert.equal(ticketCall.body?.use_stateless_ticket, undefined);
-    assert.deepEqual(ticketCall.body, {});
+    assert.deepEqual(ticketCall.body, { use_stateless_ticket: true });
 });
 
 test("a refused authorization reports the status and the step it failed at", async () => {

@@ -16,8 +16,19 @@ function taskOf(quest, type) {
     return tasks?.[type];
 }
 
-export function createAdapters({ native, http, getRecipeTexts }) {
+export function createAdapters({ native, http, getRecipeTexts, resolveChannelId }) {
     const activityAuth = createActivityAuth({ native, http });
+
+    /**
+     * Every activity handshake is scoped to a channel, because that is what Discord's own client
+     * does and what the activity proxy resolves the application's environment through.
+     */
+    function grant(args) {
+        return activityAuth.grant({
+            ...args,
+            channelId: args?.channelId ?? resolveChannelId?.() ?? null
+        });
+    }
 
     const acf = {
         id: "acf",
@@ -28,7 +39,7 @@ export function createAdapters({ native, http, getRecipeTexts }) {
             return Boolean(taskOf(quest, "ACHIEVEMENT_IN_ACTIVITY"));
         },
         async run({ quest, task, applicationId, isCurrent, signal, log, warn, sleep }) {
-            const authorization = await activityAuth.grant({
+            const authorization = await grant({
                 applicationId, questId: quest.id, isCurrent, signal, warn
             });
             try {
@@ -74,7 +85,7 @@ export function createAdapters({ native, http, getRecipeTexts }) {
     return {
         ids: adapters.map(adapter => adapter.id),
         describe,
-        grantActivity: activityAuth.grant,
+        grantActivity: grant,
         /**
          * Sources are tried in the order the engine lists them: shipped recipes first, then the
          * user's own document, then the adapters compiled into the plugin.
@@ -82,7 +93,7 @@ export function createAdapters({ native, http, getRecipeTexts }) {
         find(quest, context = {}) {
             for (const { text } of recipeSources()) {
                 for (const recipe of parseRecipes(text).recipes) {
-                    const adapter = createRecipeAdapter(recipe, { native, grantActivity: activityAuth.grant });
+                    const adapter = createRecipeAdapter(recipe, { native, grantActivity: grant });
                     if (!adapter.matchesQuest(quest, context)) continue;
                     // The handshake must address the application the recipe named, which is not
                     // always the first application id on the quest.
