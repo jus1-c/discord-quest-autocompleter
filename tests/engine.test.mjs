@@ -1558,7 +1558,10 @@ test("the built-in Arise recipe drives an achievement quest end to end", async t
         assert.equal(authorized.headers["X-Discord-Hostname"], "1557799582732124221.discordsays.com");
         assert.equal(authorized.headers["X-Arise-Client"], "astronaut-prod-main-46567f6");
         assert.equal(authorized.ticket, "ab+cd/ef==");
-        assert.match(authorized.referrer, /discord_proxy_ticket=ab\+cd\/ef==$/);
+        // The referrer is a URL too, so its ticket is percent-encoded the same way; a raw "+"
+        // would be read back as a space and the proxy would answer "Env data not found".
+        assert.match(authorized.referrer, /discord_proxy_ticket=ab%2Bcd%2Fef%3D%3D$/);
+        assert.equal(new URL(authorized.referrer).searchParams.get("discord_proxy_ticket"), "ab+cd/ef==");
         // Registration upgrades the Arise user token to the token progress is reported with.
         // The ticket is base64, so it has to be percent-encoded before it goes into a query.
         assert.match(calls[0].url, /\.proxy\/acf\/arise\/register\?discord_proxy_ticket=ab%2Bcd%2Fef%3D%3D$/);

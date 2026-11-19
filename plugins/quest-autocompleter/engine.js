@@ -42,6 +42,7 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
     const enrolledIds = new Set();
     const reportedUnsupported = new Set();
     const achievementFailed = new Set();
+    let lastActivityFailure = null;
 
     function log(...args) {
         if (settings.logProgress) console.log("[QuestAutocompleter]", ...args);
@@ -78,6 +79,7 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
         enrolledIds.clear();
         reportedUnsupported.clear();
         achievementFailed.clear();
+        lastActivityFailure = null;
     }
 
     function sleep(ms) {
@@ -533,6 +535,16 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
                 } catch (error) {
                     if (myGeneration === generation && type === "ACHIEVEMENT_IN_ACTIVITY") {
                         achievementFailed.add(quest.id);
+                        // Kept for the diagnostics so a refusal can be reported with the step that
+                        // produced it instead of only "failed".
+                        lastActivityFailure = {
+                            questId: quest.id,
+                            name: quest.config.messages?.questName ?? null,
+                            step: error?.step ?? null,
+                            status: error?.status ?? error?.res?.status ?? null,
+                            serverMessage: error?.serverMessage ?? null,
+                            message: String(error?.message ?? error).slice(0, 240)
+                        };
                         console.warn(`[QuestAutocompleter] Achievement failed for "${quest.config.messages?.questName}"${errorStatus(error)}${errorDetail(error)}; not retrying this session.`);
                     } else if (myGeneration === generation) {
                         log(`Error completing "${quest.config.messages?.questName}"${errorStatus(error)}${errorDetail(error)}`);
@@ -694,6 +706,7 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
             transports: { native: Boolean(native), desktop: Boolean(desktopTransport) },
             adapters: adapters.ids,
             recipes: adapters.describe(),
+            lastActivityFailure,
             quests: allQuests().map(quest => {
                 const choice = chooseTask(quest);
                 return {

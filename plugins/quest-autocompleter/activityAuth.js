@@ -16,6 +16,20 @@ function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * The activity iframe URL the activity itself would be served from. The proxy ticket is part of
+ * the query string, so it must be percent-encoded: a base64 ticket can contain "+", which a query
+ * string decodes as a space, and the proxy then cannot resolve the activity's environment and
+ * answers "Env data not found".
+ */
+export function activityReferrer(applicationId, ticket) {
+    const url = new URL(`https://${applicationId}.discordsays.com/`);
+    url.searchParams.set("instance_id", "example-cl-instance");
+    url.searchParams.set("platform", "desktop");
+    url.searchParams.set("discord_proxy_ticket", ticket);
+    return url.toString();
+}
+
 export function createActivityAuth({ native, http }) {
     /**
      * Returns `{ token, referrer, ticket, cleanup }`. `token` is null when the session changed
@@ -88,7 +102,7 @@ export function createActivityAuth({ native, http }) {
             if (!isCurrent()) return { token: null, referrer: null, ticket: null, cleanup };
             const ticket = ticketResponse.body?.ticket;
             if (!ticket) throw new Error("Activity proxy ticket unavailable");
-            const referrer = `https://${applicationId}.discordsays.com/?instance_id=example-cl-instance&platform=desktop&discord_proxy_ticket=${ticket}`;
+            const referrer = activityReferrer(applicationId, ticket);
             // The activity's own client runs this call in a three attempt loop, so a first
             // refusal (its server answers 500 on some session states) is not the end of the run.
             let authResult = null;
@@ -113,7 +127,13 @@ export function createActivityAuth({ native, http }) {
             }
             if (!isCurrent()) return { token: null, referrer, ticket, ticketQuery: null, cleanup };
             if (!authResult.ok || !authResult.body?.token) {
-                throw new Error(`Activity authorization failed (${describeResponse(authResult)})`);
+                // `step` and `status` travel with the error so the diagnostics can say which call
+                // of the handshake was refused instead of a bare "failed".
+                const error = new Error(`Activity authorization failed (${describeResponse(authResult)})`);
+                error.step = "authorize";
+                error.status = authResult?.status ?? null;
+                error.serverMessage = authResult?.body?.message ?? null;
+                throw error;
             }
             return {
                 token: authResult.body.token,
