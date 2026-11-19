@@ -109,6 +109,48 @@ test("the probe reads the application and the handshake sends what it found", as
     assert.equal(adapters.lastProbe().universeId, "ecd7bb92-1e08-4ad1-b76f-0d33c5013295");
 });
 
+test("a refused progress report says which step failed and what the server answered", async () => {
+    const { createAdapters } = await loadAdapters();
+    const native = {
+        async request() { return { ok: true, status: 200, body: "<script src=/app.js></script>" }; },
+        async discordsaysAuthorize() { return { ok: true, status: 200, body: { token: "t" } }; },
+        // The activity's own client only accepts status "ok"; a 200 with another status is a refusal.
+        async discordsaysProgress() { return { ok: true, status: 200, body: { status: "error", message: "Invalid quest" } }; }
+    };
+    const http = {
+        get: async () => ({ body: [] }),
+        post: async ({ url }) => url === "/oauth2/authorize"
+            ? { body: { location: "https://discord.com/oauth2/authorized?code=c" } }
+            : { body: { ticket: "t" } },
+        del: async () => ({ body: {} })
+    };
+
+    const adapters = createAdapters({ native, http, resolveChannelId: () => "999" });
+    const adapter = adapters.find({
+        id: "q",
+        config: { application: { id: "1557307363499712582" }, taskConfig: { tasks: { ACHIEVEMENT_IN_ACTIVITY: { target: 100 } } } }
+    });
+
+    await assert.rejects(
+        adapter.run({
+            quest: { id: "q", config: { messages: {} }, userStatus: {} },
+            task: { target: 100 },
+            applicationId: "1557307363499712582",
+            isCurrent: () => true,
+            log: () => { },
+            warn: () => { },
+            sleep: async () => { }
+        }),
+        error => {
+            assert.equal(error.step, "progress");
+            assert.equal(error.status, 200);
+            assert.equal(error.serverMessage, "Invalid quest");
+            assert.match(error.message, /Activity progress failed \(status 200/);
+            return true;
+        }
+    );
+});
+
 test("an adapter is not offered without the native transport it needs", async () => {
     const { createAdapters } = await loadAdapters();
     const adapters = createAdapters({ native: undefined, http: {} });

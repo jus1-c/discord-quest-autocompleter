@@ -121,7 +121,9 @@ export function createNative(nativeFetch) {
                 Referer: referrer,
                 ...(headers ?? {})
             },
-            body: { progress: Math.floor(progress), ...(body ?? {}) },
+            // The activity's own client sends both fields: it reads the quest id back out of the
+            // body, not only out of the header.
+            body: { progress: Math.floor(progress), quest_id: questId, ...(body ?? {}) },
             signal
         });
     }

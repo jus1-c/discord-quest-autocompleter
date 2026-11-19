@@ -49,6 +49,11 @@ export function findClientHeader(source) {
     if (typeof source !== "string") return null;
     const literal = /["']X-Arise-Client["']\s*:\s*["']([^"']{2,60})["']/.exec(source);
     if (literal) return literal[1];
+    // The value is built from two literals and a template, never spelled out whole:
+    //   let n="3cdce096", r="moai-prod-main", a = n ? `${r}-${n}` : r
+    // which is the build string the header carries: "moai-prod-main-3cdce096".
+    const built = /let\s+(\w+)\s*=\s*["']([0-9a-f]{4,16})["']\s*,\s*(\w+)\s*=\s*["']([a-z][a-z0-9-]{2,40})["']\s*,\s*\w+\s*=\s*\1\s*\?\s*`\$\{\3\}-\$\{\1\}`/.exec(source);
+    if (built) return `${built[4]}-${built[2]}`;
     const version = /appVersion\s*[:=]\s*["']([^"']{4,60})["']/.exec(source);
     return version ? version[1] : null;
 }

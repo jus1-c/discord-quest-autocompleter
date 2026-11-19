@@ -11,6 +11,7 @@
 import { createRecipeAdapter, parseRecipes } from "./recipes.js";
 import { createActivityAuth } from "./activityAuth.js";
 import { headersFromProbe, probeActivity } from "./probe.js";
+import { describeResponse } from "./redact.js";
 
 function taskOf(quest, type) {
     const tasks = quest?.config?.taskConfig?.tasks ?? quest?.config?.taskConfigV2?.tasks;
@@ -79,7 +80,18 @@ export function createAdapters({ native, http, getRecipeTexts, resolveChannelId 
                         signal
                     });
                     if (!isCurrent()) return;
-                    if (!progress.ok) throw new Error("Activity progress failed");
+                    // The activity's own client treats the call as accepted only when it answers
+                    // 2xx *and* the body says status "ok"; a 200 with another status is a refusal.
+                    const reported = progress.body?.status;
+                    if (!progress.ok || (reported !== undefined && reported !== "ok")) {
+                        // Without the status and the server's answer a refusal is indistinguishable
+                        // from a transport problem, which is what made this one take a round trip.
+                        const error = new Error(`Activity progress failed (${describeResponse(progress)})`);
+                        error.step = "progress";
+                        error.status = progress?.status ?? null;
+                        error.serverMessage = progress.body?.message ?? null;
+                        throw error;
+                    }
                     log(`[${quest.config.messages?.questName}] Progress: ${done}/${task.target}`);
                     if (done < task.target) await sleep(Math.floor(Math.random() * 4000) + 18_000);
                 }

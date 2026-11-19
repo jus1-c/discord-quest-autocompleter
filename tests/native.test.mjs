@@ -19,6 +19,30 @@ async function nextTurn() {
     await new Promise(resolve => setImmediate(resolve));
 }
 
+test("a progress report names the quest in the body, as the activity's own client does", async () => {
+    const { createNative } = await loadNative();
+    const requests = [];
+    const native = createNative(async (url, options) => {
+        requests.push({ url, options });
+        return response({ status: "ok" });
+    });
+
+    await native.discordsaysProgress({
+        appId: "1557307363499712582",
+        questId: "1557996162189893723",
+        referrer: "https://1557307363499712582.discordsays.com/?instance_id=example-cl-instance",
+        ticket: "t",
+        token: "quest-token",
+        progress: 42.9,
+        headers: { "X-Universe-ID": "ecd7bb92-1e08-4ad1-b76f-0d33c5013295" }
+    });
+
+    const body = JSON.parse(requests[0].options.body);
+    assert.deepEqual(body, { progress: 42, quest_id: "1557996162189893723" });
+    assert.equal(requests[0].options.headers["X-Universe-ID"], "ecd7bb92-1e08-4ad1-b76f-0d33c5013295");
+    assert.equal(requests[0].options.headers["X-Auth-Token"], "quest-token");
+});
+
 test("claim sends the Discord token only to the Discord quest endpoint without redirects", async () => {
     const { createNative } = await loadNative();
     const requests = [];

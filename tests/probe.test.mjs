@@ -59,6 +59,17 @@ test("the probe reports the client header and the acf paths", async () => {
     }
 });
 
+test("the client header is rebuilt from the two literals the bundle composes it from", async () => {
+    const { findClientHeader } = await loadProbe();
+    // Copied from the real bundle: let n="3cdce096", r="moai-prod-main", a = n ? `${r}-${n}` : r
+    const wildHorse = 'let n="3cdce096",r="moai-prod-main",a=n?`${r}-${n}`:r';
+    const exoplanet = 'let n="46567f6",r="astronaut-prod-main",a=n?`${r}-${n}`:r';
+
+    assert.equal(findClientHeader(wildHorse), "moai-prod-main-3cdce096");
+    // The shipped Arise recipe hardcodes this exact string, so reading it back proves the parse.
+    assert.equal(findClientHeader(exoplanet), "astronaut-prod-main-46567f6");
+});
+
 test("the progress body and its success condition are read from the bundle", async () => {
     const { findProgressShape } = await loadProbe();
     const shape = findProgressShape(WILD_HORSE_BUNDLE);
