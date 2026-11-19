@@ -52,7 +52,6 @@ store.fetchIntervalMinutes ??= 120;
 store.desktopHeartbeatSeconds ??= 60;
 store.desktopUserAgent ??= "";
 store.customAdapters ??= "";
-store.useBuiltInRecipes ??= true;
 store.captchaService ??= "nopecha";
 store.captchaApiKey ??= "";
 
@@ -287,13 +286,6 @@ export function settings() {
                     onChange={value => { store.logProgress = value; }}
                 >
                     Log progress to the console
-                </SwitchItem>
-                <SwitchItem
-                    checked={store.useBuiltInRecipes}
-                    note="Ships recipes for activity quests whose application reports its own progress. Turn it off to run only your own recipes."
-                    onChange={value => { store.useBuiltInRecipes = value; }}
-                >
-                    Use built-in recipes
                 </SwitchItem>
                 <div class="qac-field">
                     <label class="qac-label" for="qac-recipes">Custom adapters (JSON)</label>

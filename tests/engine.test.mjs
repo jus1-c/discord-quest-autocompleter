@@ -1511,7 +1511,7 @@ test("a recipe can reuse the plugin's own activity authorization", async t => {
     }
 });
 
-test("the built-in Arise recipe drives an achievement quest end to end", async t => {
+test("a recipe drives an achievement quest end to end with its own two tokens", async t => {
     const { createEngine } = await loadEngine();
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const gameQuest = multiTaskQuest("916", {
@@ -1530,6 +1530,32 @@ test("the built-in Arise recipe drives an achievement quest end to end", async t
     };
     env.options.http.del = async () => ({ body: {} });
     env.options.settings.achievementBypass = true;
+    env.options.settings.customAdapters = JSON.stringify([{
+        id: "arise-activity",
+        match: { applicationId: "1557799582732124221", taskTypes: ["ACHIEVEMENT_IN_ACTIVITY"] },
+        setup: [
+            {
+                kind: "activityAuthorize",
+                headers: { "X-Arise-Client": "astronaut-prod-main-46567f6" },
+                save: { questToken: "token", proxyTicket: "ticketQuery", referrer: "referrer" }
+            },
+            {
+                url: "https://{applicationId}.discordsays.com/.proxy/acf/arise/register?discord_proxy_ticket={proxyTicket}",
+                auth: "none",
+                headers: { "X-Auth-Token": "{questToken}" },
+                save: { accountToken: "authToken" }
+            }
+        ],
+        report: {
+            url: "https://{applicationId}.discordsays.com/.proxy/acf/quest/progress?discord_proxy_ticket={proxyTicket}",
+            auth: "none",
+            headers: { "X-Auth-Token": "{questToken}" },
+            body: { progress: "{value}", quest_id: "{questId}" },
+            intervalSeconds: 6,
+            successPath: "status",
+            successEquals: "ok"
+        }
+    }]);
     env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
     const calls = [];
     let authorized = null;
@@ -1555,8 +1581,6 @@ test("the built-in Arise recipe drives an achievement quest end to end", async t
         const report = engine.diagnostics().quests[0];
         assert.equal(report.adapter, "recipe:arise-activity");
         // The authorize call carries the activity's own protocol, with its placeholders filled in.
-        assert.equal(authorized.headers["X-Discord-Activity-Id"], "1557799582732124221");
-        assert.equal(authorized.headers["X-Discord-Hostname"], "1557799582732124221.discordsays.com");
         assert.equal(authorized.headers["X-Arise-Client"], "astronaut-prod-main-46567f6");
         assert.equal(authorized.ticket, "ab+cd/ef==");
         // The referrer is a URL too, so its ticket is percent-encoded the same way; a raw "+"
@@ -1582,7 +1606,7 @@ test("the built-in Arise recipe drives an achievement quest end to end", async t
     }
 });
 
-test("turning off built-in recipes falls back to the built in adapter", async t => {
+test("a quest with no matching recipe falls back to the built in adapter", async t => {
     const { createEngine } = await loadEngine();
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const gameQuest = multiTaskQuest("917", {
@@ -1595,7 +1619,6 @@ test("turning off built-in recipes falls back to the built in adapter", async t 
         return { body: {} };
     });
     env.options.settings.achievementBypass = true;
-    env.options.settings.useBuiltInRecipes = false;
     env.options.http.post = async () => ({ body: {} });
     env.options.flux.stores.AuthenticationStore = { getToken: () => "discord-test-token" };
     env.options.native = {

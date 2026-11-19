@@ -5,12 +5,11 @@
  *
  * A quest recipe can only be written by someone who knows how that one application reports
  * progress, and that knowledge lives in the application, not in this plugin. So the diagnostics
- * export carries the recipe schema, the limits, a working example and a prompt that names what is
- * still missing. Handing that export to any agent gives it everything the plugin knows, and tells
+ * export carries the recipe schema, the limits, an example document and a prompt that names what
+ * is still missing. Handing that export to any agent gives it everything the plugin knows, and tells
  * it exactly which evidence it must ask a human for instead of inventing endpoints.
  */
 
-import { BUILT_IN_RECIPES } from "./builtinRecipes.js";
 import { RECIPE_LIMITS, parseRecipes } from "./recipes.js";
 import { redact } from "./redact.js";
 
@@ -58,6 +57,35 @@ export const ALLOWED_HOSTS = [
     "https://{applicationId}.discordsays.com/..."
 ];
 
+/**
+ * A synthetic document, not any real application's protocol: it exists so an author sees the
+ * shape of every part in one place. It is run through the validator before it is handed out, so
+ * the example can never be something the plugin would reject.
+ */
+const EXAMPLE_RECIPE = [
+    {
+        id: "example-activity",
+        match: { applicationId: "000000000000000000", taskTypes: ["ACHIEVEMENT_IN_ACTIVITY"] },
+        setup: [
+            {
+                kind: "activityAuthorize",
+                headers: { "X-Example-Header": "value" },
+                save: { questToken: "token", proxyTicket: "ticketQuery", referrer: "referrer" }
+            }
+        ],
+        report: {
+            url: "https://{applicationId}.discordsays.com/.proxy/example/progress?discord_proxy_ticket={proxyTicket}",
+            auth: "none",
+            headers: { "X-Auth-Token": "{questToken}", Referer: "{referrer}" },
+            body: { progress: "{value}", quest_id: "{questId}" },
+            step: 1,
+            intervalSeconds: 20,
+            successPath: "status",
+            successEquals: "ok"
+        }
+    }
+];
+
 const MISSING_EVIDENCE = [
     "The application's own endpoints, path names and header names: they live in that application's frontend, not in this plugin.",
     "The body shape the application's progress call expects (a number, an object, a field named something specific).",
@@ -70,7 +98,7 @@ const MISSING_EVIDENCE = [
  * application's own traffic will otherwise invent plausible endpoints, and a recipe built on
  * invented endpoints fails in exactly the way this export is trying to diagnose.
  */
-export function buildAuthoringPrompt({ failure: rawFailure, builtInRecipes }) {
+export function buildAuthoringPrompt({ failure: rawFailure, example }) {
     // The export is meant to be pasted into a chat, so it is scrubbed again here rather than
     // trusting every caller to have done it.
     const failure = rawFailure ? redact(rawFailure) : null;
@@ -102,8 +130,8 @@ export function buildAuthoringPrompt({ failure: rawFailure, builtInRecipes }) {
         "Hard limits, enforced by the plugin's validator:",
         JSON.stringify(RECIPE_LIMITS, null, 2),
         "",
-        "A working recipe, for shape only. It belongs to a different application; do not copy its paths or headers:",
-        JSON.stringify(builtInRecipes, null, 2),
+        "An example recipe, for shape only. Its paths, headers and ids are placeholders; do not copy them:",
+        JSON.stringify(example, null, 2),
         "",
         "What this export cannot tell you:",
         ...MISSING_EVIDENCE.map(line => `- ${line}`),
@@ -126,22 +154,17 @@ export function buildAuthoringPrompt({ failure: rawFailure, builtInRecipes }) {
         schema: RECIPE_SCHEMA,
         allowedHosts: ALLOWED_HOSTS,
         limits: RECIPE_LIMITS,
-        example: builtInRecipes,
+        example,
         missingEvidence: MISSING_EVIDENCE,
         prompt
     };
 }
 
 /**
- * The shipped recipes as the JSON an author would write. Returned only when the validator accepts
- * them, so the example handed to an agent can never be a document the plugin would reject.
+ * The example as the JSON an author would write. Returned only when the validator accepts it, so
+ * the example handed to an agent can never be a document the plugin would reject.
  */
-export function builtInRecipeDocuments() {
-    const { errors } = parseRecipes(BUILT_IN_RECIPES);
-    if (errors.length) return [];
-    try {
-        return JSON.parse(BUILT_IN_RECIPES);
-    } catch {
-        return [];
-    }
+export function recipeExample() {
+    const text = JSON.stringify(EXAMPLE_RECIPE);
+    return parseRecipes(text).errors.length ? [] : EXAMPLE_RECIPE;
 }

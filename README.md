@@ -72,16 +72,16 @@ Open the gear icon on the plugin card in **Shelter → Plugins**.
 - **Prefer the desktop task** — on by default. A quest can offer several platforms (for example desktop, Xbox and PlayStation at once); with this on the plugin runs the desktop task instead of the first one the quest lists. It never changes the platform your reward is redeemable on.
 - **Quest families** — video, play desktop and activity are on; stream desktop and achievement are off because both are experimental.
 - **Claim rewards automatically** — off by default, plus the CAPTCHA solver and its API key.
-- **Advanced** — quest refresh interval, desktop heartbeat interval, desktop user agent override, console logging, built-in recipes, custom adapters and **Copy diagnostics**.
+- **Advanced** — quest refresh interval, desktop heartbeat interval, desktop user agent override, console logging, custom adapters and **Copy diagnostics**.
 
 Activity quests are the only family whose console output explains itself before anything is attempted:
 
 ```
-[QuestAutocompleter] Activity quest "<quest name>": apps [<application id>], built-in: arise-activity | custom: none
-[QuestAutocompleter] Activity protocol: recipe:arise-activity for "<quest name>"
+[QuestAutocompleter] Activity quest "<quest name>": apps [<application id>], custom: none
+[QuestAutocompleter] Activity protocol: acf for "<quest name>"
 ```
 
-The first line is there so a quest that is not finishing can be diagnosed without a debugger: it lists every application id the quest carries and which recipes parsed (or the first parse problem).
+The first line is there so a quest that is not finishing can be diagnosed without a debugger: it lists every application id the quest carries and which custom recipes parsed (or the first parse problem).
 
 ### Quests the plugin cannot run
 
@@ -93,7 +93,7 @@ Application-tracked quests live in `adapters.js`. Each protocol is one adapter w
 
 ### Custom adapters (recipes)
 
-A quest whose application reports its own progress can often be supported without a new build. Recipes are checked in this order: the built-in ones first (see **Use built-in recipes**), then **Advanced → Custom adapters (JSON)**, then the adapters compiled into the plugin. Turn the built-in switch off when you want your own recipe to take over one of those quests.
+A quest whose application reports its own progress can often be supported without a new build. Recipes are checked in this order: **Advanced → Custom adapters (JSON)** first, then the adapters compiled into the plugin. Nothing is shipped as a recipe: the activity adapter reads the application's own frontend for the ids and headers it needs, so a recipe is only for an application that adapter cannot work out.
 
 ```json
 [
@@ -126,66 +126,13 @@ An activity request has no cookies and no iframe, so the activity proxy ticket t
 
 Setup steps are retried up to three times, one second apart, and the activity authorization the same way, because a first call in a session can be refused and succeed immediately afterwards. The progress `report` is never retried, so progress cannot be counted twice. A refused request reports the status and the server's answer (with tokens, codes and secrets replaced) instead of a bare "failed".
 
-#### Shipped recipe: Arise activities
+#### Activity adapter versus a recipe
 
-`builtinRecipes.js` ships one recipe, `arise-activity`, for the application `1557799582732124221`. It was read from the activity's own frontend: authorize, register a session, then report `{ progress, quest_id }` and expect `{ "status": "ok" }`, on a five second throttle.
+The `acf` adapter in `adapters.js` handles every activity whose backend follows the `/.proxy/acf` protocol, and it derives that application's own `X-Universe-ID` and `X-Arise-Client` from the application's public frontend bundle before the handshake. Two applications of that kind that were tested need no recipe at all.
 
-Two tokens are involved and they are not interchangeable. The authorize token authenticates the `/.proxy/acf/*` calls, which is why the progress report uses it; the `authToken` from the register call authenticates the application's main `/.proxy/api/*` API instead, and the quest endpoints reject it with `Unable to get user info from auth token`.
+Two tokens are still involved and they are not interchangeable. The authorize token authenticates the `/.proxy/acf/*` calls, which is why the progress report uses it; an application's own register token usually authenticates its main `/.proxy/api/*` API instead, and the quest endpoints reject it with `Unable to get user info from auth token`.
 
-```json
-[
-  {
-    "id": "arise-activity",
-    "match": { "applicationId": "1557799582732124221", "taskTypes": ["ACHIEVEMENT_IN_ACTIVITY"] },
-    "setup": [
-      {
-        "kind": "activityAuthorize",
-        "headers": {
-          "X-Universe-ID": "d5f3e8ae-12a3-4aa9-a0f0-25e1aa92416b",
-          "X-Discord-Activity-Id": "{applicationId}",
-          "X-Discord-Hostname": "{applicationId}.discordsays.com",
-          "X-Arise-Client": "astronaut-prod-main-46567f6"
-        },
-        "save": { "questToken": "token", "proxyTicket": "ticketQuery", "referrer": "referrer" }
-      },
-      {
-        "url": "https://{applicationId}.discordsays.com/.proxy/acf/arise/register?discord_proxy_ticket={proxyTicket}",
-        "auth": "none",
-        "headers": {
-          "X-Auth-Token": "{questToken}",
-          "X-Universe-ID": "d5f3e8ae-12a3-4aa9-a0f0-25e1aa92416b",
-          "X-Discord-Activity-Id": "{applicationId}",
-          "X-Discord-Hostname": "{applicationId}.discordsays.com",
-          "X-Arise-Client": "astronaut-prod-main-46567f6",
-          "Referer": "{referrer}"
-        },
-        "save": { "accountToken": "authToken" }
-      }
-    ],
-    "report": {
-      "url": "https://{applicationId}.discordsays.com/.proxy/acf/quest/progress?discord_proxy_ticket={proxyTicket}",
-      "auth": "none",
-      "headers": {
-        "X-Auth-Token": "{questToken}",
-        "X-Universe-ID": "d5f3e8ae-12a3-4aa9-a0f0-25e1aa92416b",
-        "X-Discord-Activity-Id": "{applicationId}",
-        "X-Discord-Hostname": "{applicationId}.discordsays.com",
-        "X-Arise-Client": "astronaut-prod-main-46567f6",
-        "Referer": "{referrer}"
-      },
-      "body": { "progress": "{value}", "quest_id": "{questId}" },
-      "step": 1,
-      "intervalSeconds": 6,
-      "successPath": "status",
-      "successEquals": "ok"
-    }
-  }
-]
-```
-
-The activity throttles progress to one report every five seconds, so the interval stays above that.
-
-Keep only one recipe per quest. If a custom recipe for the same application is broken, turn **Use built-in recipes** back on and empty the custom textarea rather than debugging both at once.
+Write a recipe when the application does not follow that protocol, or when the probe cannot read its bundle. Keep only one recipe per quest: a custom recipe takes over from the adapter for the application it matches.
 
 ### Dorion limitations
 

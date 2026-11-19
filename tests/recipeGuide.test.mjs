@@ -28,7 +28,7 @@ const failure = {
 
 test("the prompt names the failing quest and how it failed", async () => {
     const { buildAuthoringPrompt } = await loadGuide();
-    const { prompt } = buildAuthoringPrompt({ failure, builtInRecipes: [] });
+    const { prompt } = buildAuthoringPrompt({ failure, example: [] });
 
     assert.match(prompt, /1557996162189893723/);
     assert.match(prompt, /1557307363499712582/);
@@ -38,9 +38,9 @@ test("the prompt names the failing quest and how it failed", async () => {
 });
 
 test("the prompt carries the schema, the limits and the example", async () => {
-    const { buildAuthoringPrompt, builtInRecipeDocuments, RECIPE_SCHEMA } = await loadGuide();
-    const example = builtInRecipeDocuments();
-    const { prompt, limits, allowedHosts } = buildAuthoringPrompt({ failure, builtInRecipes: example });
+    const { buildAuthoringPrompt, recipeExample, RECIPE_SCHEMA } = await loadGuide();
+    const example = recipeExample();
+    const { prompt, limits, allowedHosts } = buildAuthoringPrompt({ failure, example });
 
     assert.ok(prompt.includes(RECIPE_SCHEMA), "the schema has to travel with the prompt");
     assert.match(prompt, /"setupSteps"/);
@@ -52,7 +52,7 @@ test("the prompt carries the schema, the limits and the example", async () => {
 
 test("the limits published to an author are the ones the validator enforces", async () => {
     const { RECIPE_LIMITS } = await loadRecipes();
-    const { limits } = await loadGuide().then(guide => guide.buildAuthoringPrompt({ failure, builtInRecipes: [] }));
+    const { limits } = await loadGuide().then(guide => guide.buildAuthoringPrompt({ failure, example: [] }));
 
     assert.deepEqual(limits, RECIPE_LIMITS);
     // A recipe that breaks a published limit must be rejected by the real validator.
@@ -70,12 +70,12 @@ test("the limits published to an author are the ones the validator enforces", as
     assert.match(errors[0], new RegExp(String(RECIPE_LIMITS.setupSteps)));
 });
 
-test("the shipped example is a document the plugin would accept", async () => {
-    const { builtInRecipeDocuments } = await loadGuide();
+test("the example handed to an author is a document the plugin would accept", async () => {
+    const { recipeExample } = await loadGuide();
     const { parseRecipes } = await loadRecipes();
-    const example = builtInRecipeDocuments();
+    const example = recipeExample();
 
-    assert.ok(example.length > 0, "the shipped recipes must be available as an example");
+    assert.ok(example.length > 0, "an example must be available");
     const { recipes, errors } = parseRecipes(JSON.stringify(example));
     assert.deepEqual(errors, []);
     assert.equal(recipes.length, example.length);
@@ -83,7 +83,7 @@ test("the shipped example is a document the plugin would accept", async () => {
 
 test("the prompt tells an agent not to invent endpoints and what to ask for", async () => {
     const { buildAuthoringPrompt } = await loadGuide();
-    const { prompt, missingEvidence } = buildAuthoringPrompt({ failure, builtInRecipes: [] });
+    const { prompt, missingEvidence } = buildAuthoringPrompt({ failure, example: [] });
 
     assert.match(prompt, /Do not invent endpoints/);
     assert.match(prompt, /HAR/);
@@ -94,7 +94,7 @@ test("the prompt tells an agent not to invent endpoints and what to ask for", as
 
 test("with nothing failed yet the prompt asks which quest is failing instead of guessing", async () => {
     const { buildAuthoringPrompt } = await loadGuide();
-    const { prompt } = buildAuthoringPrompt({ failure: null, builtInRecipes: [] });
+    const { prompt } = buildAuthoringPrompt({ failure: null, example: [] });
 
     assert.match(prompt, /nothing concrete to write a recipe for/);
     assert.doesNotMatch(prompt, /What the plugin already tried/);
@@ -107,7 +107,7 @@ test("the prompt scrubs a secret even if the caller forgot to", async () => {
         message: "failed with eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
         token: "a-real-looking-token"
     };
-    const { prompt } = buildAuthoringPrompt({ failure: leaked, builtInRecipes: [] });
+    const { prompt } = buildAuthoringPrompt({ failure: leaked, example: [] });
 
     assert.doesNotMatch(prompt, /eyJhbGciOiJIUzI1NiJ9/);
     assert.match(prompt, /<jwt>/);

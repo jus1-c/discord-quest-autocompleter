@@ -6,8 +6,7 @@
 
 import { normalizeQuest } from "./quests.js";
 import { createAdapters } from "./adapters.js";
-import { BUILT_IN_RECIPES } from "./builtinRecipes.js";
-import { buildAuthoringPrompt, builtInRecipeDocuments } from "./recipeGuide.js";
+import { buildAuthoringPrompt, recipeExample } from "./recipeGuide.js";
 
 export function createEngine({ flux, http, settings, native, desktopTransport }) {
     const { dispatcher } = flux;
@@ -28,12 +27,10 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
         native,
         http,
         resolveChannelId: resolveActivityChannelId,
-        getRecipeTexts: () => {
-            const sources = [];
-            if (settings.useBuiltInRecipes !== false) sources.push({ label: "built-in", text: BUILT_IN_RECIPES });
-            sources.push({ label: "custom", text: settings.customAdapters });
-            return sources;
-        }
+        // Only the user's own document: the activity adapter reads the application's own
+        // frontend for the ids and headers its handshake needs, so shipping a recipe would
+        // duplicate a path that already works for every application of that kind.
+        getRecipeTexts: () => [{ label: "custom", text: settings.customAdapters }]
     });
     const supportedTasks = [
         "WATCH_VIDEO", "PLAY_ON_DESKTOP", "STREAM_ON_DESKTOP",
@@ -732,7 +729,7 @@ export function createEngine({ flux, http, settings, native, desktopTransport })
             // an agent which evidence it must still ask for. See recipeGuide.js.
             recipeAuthoring: buildAuthoringPrompt({
                 failure: lastActivityFailure,
-                builtInRecipes: builtInRecipeDocuments()
+                example: recipeExample()
             }),
             quests: allQuests().map(quest => {
                 const choice = chooseTask(quest);
